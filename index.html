@@ -1,0 +1,491 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#faf8f5"><script src="https://telegram.org/js/telegram-web-app.js"></script><title>Yasa cat · nail artist</title><style>
+:root{--bg:#faf8f5;--paper:#fff;--ink:#302b29;--muted:#837b76;--line:#e9e2dc;--rose:#ead6d0;--accent:#77554e;--soft:#f3eeea}
+*{box-sizing:border-box}
+html,body{height:100%;overscroll-behavior-y:none;-webkit-user-select:none;user-select:none;touch-action:manipulation}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;-webkit-text-size-adjust:100%}
+button,input{font:inherit}
+button{cursor:pointer;-webkit-tap-highlight-color:transparent;color:inherit;touch-action:manipulation}
+button:disabled{cursor:default;opacity:.4}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+main{max-width:460px;margin:auto;padding:24px 22px calc(96px + env(safe-area-inset-bottom, 20px));min-height:100vh}
+header{margin-bottom:28px;display:flex;justify-content:space-between;align-items:center}
+.brand{font-size:24px;font-weight:700;letter-spacing:-0.5px}
+.brand small{display:block;font-size:9px;font-weight:600;letter-spacing:2px;color:var(--muted);margin-top:0;text-transform:uppercase}
+.tag-geo{font-size:11px;color:var(--accent);background:var(--soft);padding:6px 10px;border-radius:20px;border:1px solid var(--line)}
+h1,h2,p{margin:0}
+h1{font-size:32px;line-height:1.2;letter-spacing:-1px;font-weight:600}
+h2{font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.4px}
+.eyebrow{font-size:10px;letter-spacing:2px;color:var(--accent);text-transform:uppercase;margin-bottom:12px}
+.muted{color:var(--muted)}
+.primary,.secondary{width:100%;border:0;border-radius:14px;padding:16px 20px;font-size:14px;font-weight:600;min-height:52px}
+.primary{background:var(--ink);color:white}
+.secondary{background:var(--soft);color:var(--ink)}
+.section-head{display:flex;align-items:center;justify-content:space-between;margin:28px 0 14px}
+.text-btn{padding:6px 0;border:0;background:none;color:var(--accent);font-size:12px}
+.feature-row{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:14px 0;gap:16px}
+.feature-row:last-child{border:0}
+.service-name{font-size:14px;font-weight:600}
+.meta{font-size:12px;color:var(--muted);margin-top:4px}
+.price{font-size:14px;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
+.master{display:flex;align-items:center;gap:14px;border:1px solid var(--line);background:var(--paper);border-radius:18px;padding:16px;margin-top:20px}
+.avatar{height:44px;width:44px;display:grid;place-items:center;border-radius:50%;background:var(--rose);font-size:18px;color:var(--accent);flex:none;font-weight:600}
+.fine{font-size:11px;line-height:1.6;color:var(--muted)}
+nav{position:fixed;bottom:0;left:0;right:0;padding:10px 16px calc(10px + env(safe-area-inset-bottom, 12px));background:var(--bg);border-top:1px solid var(--line);z-index:100;transform:translateZ(0);-webkit-transform:translateZ(0)}
+.nav-inner{max-width:420px;margin:auto;display:flex;gap:6px}
+nav button{flex:1;background:transparent;border:0;border-radius:12px;padding:9px 3px;color:var(--muted);font-size:10px}
+nav button.active{background:var(--soft);color:var(--ink)}
+nav svg{display:block;width:20px;height:20px;margin:0 auto 4px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.screen[hidden]{display:none}
+.step{display:flex;gap:8px;align-items:center;margin:20px 0}
+.step span{height:3px;background:var(--line);flex:1;border-radius:8px}
+.step span.on{background:var(--accent)}
+.back{border:0;background:none;padding:0;margin:0 0 16px;font-size:12px;color:var(--muted)}
+.service{display:block;width:100%;text-align:left;background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:18px;margin-top:10px}
+.service.selected{border-color:var(--accent);background:#fcf7f4}
+.service-top{display:flex;justify-content:space-between;gap:16px}
+.service-bottom{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
+.radio{width:18px;height:18px;border:1px solid var(--line);border-radius:50%;flex:none}
+.selected .radio{border:5px solid var(--accent)}
+.action{margin-top:24px}
+.selection{background:var(--soft);border-radius:14px;padding:14px;margin:18px 0;font-size:13px}
+.calendar-title{display:flex;align-items:center;justify-content:space-between;margin:22px 0 14px}
+.month-btn{background:none;border:1px solid var(--line);border-radius:10px;width:32px;height:32px}
+.calendar{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;text-align:center}
+.weekday{font-size:10px;color:var(--muted);padding:5px 0}
+.day{border:0;background:none;border-radius:12px;min-height:38px;font-size:13px}
+.day.selected,.time.selected{background:var(--ink);color:white}
+.day:disabled{opacity:.2}
+.times{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.time{background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:12px 4px;font-size:13px}
+.label{display:block;font-size:12px;color:var(--muted);margin:18px 0 7px}
+input{width:100%;border:1px solid var(--line);border-radius:12px;background:white;padding:14px;color:var(--ink);font-size:16px;-webkit-user-select:text;user-select:text}
+.summary{background:white;border:1px solid var(--line);padding:18px;border-radius:18px;margin:18px 0}
+.summary-row{display:flex;justify-content:space-between;gap:18px;font-size:13px;margin:10px 0}
+.summary-row span:first-child{color:var(--muted)}
+.summary-row span:last-child{text-align:right}
+.total{border-top:1px solid var(--line);padding-top:14px;font-weight:600}
+.success-icon{width:60px;height:60px;border-radius:50%;background:#e9ede6;display:grid;place-items:center;font-size:22px;color:#5a6a52;margin:18px 0}
+.empty{padding:32px 0;text-align:center}
+.empty h2{margin-bottom:8px}
+.empty p{font-size:13px;color:var(--muted);margin-bottom:22px}
+.booking-actions{display:flex;gap:8px;margin-top:14px}
+.booking-actions button{font-size:12px;padding:12px;min-height:44px}
+.error{color:#a24c46;font-size:12px;margin-top:10px}
+
+/* GRID WITH WORKS */
+.works-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.work-card{background:var(--paper);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 4px 16px rgba(84,58,42,.03)}
+.work-card img{width:100%;height:156px;object-fit:cover;object-position:center;display:block}
+.work-info{padding:10px 12px;display:flex;justify-content:space-between;align-items:center;font-size:12px}
+.work-price{font-weight:700;color:var(--accent);font-size:13px}
+.work-meta{color:var(--muted);font-size:12px}
+
+/* ADDONS */
+.addon-item{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--paper);border:1px solid var(--line);border-radius:12px;margin-top:8px;font-size:13px}
+.addon-item.checked{border-color:var(--accent);background:#fcf7f4}
+.custom-check{width:18px;height:18px;border-radius:5px;border:1px solid var(--line);display:grid;place-items:center;flex:none;margin-right:10px;font-size:11px}
+.addon-item.checked .custom-check{background:var(--accent);border-color:var(--accent);color:white}
+
+.info-banner{background:var(--soft);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin:20px 0;font-size:12px;line-height:1.6}
+.toast{position:fixed;bottom:calc(88px + env(safe-area-inset-bottom, 16px));left:50%;transform:translateX(-50%);max-width:90%;background:var(--ink);color:white;font-size:12px;padding:12px 18px;border-radius:12px;z-index:200}
+.toast[hidden]{display:none}
+@media(min-width:650px){
+body{background:#eae5df}
+main{background:var(--bg);box-shadow:0 0 40px rgba(0,0,0,.04)}
+nav{max-width:460px;left:50%;transform:translateX(-50%)}
+.toast{transform:translateX(-50%)}
+}
+</style></head><body><main>
+<header>
+  <div class="brand">Yasa cat<small>NAIL ARTIST</small></div>
+  <div class="tag-geo">м. Новогиреево</div>
+</header>
+
+<section id="home" class="screen">
+  <p class="eyebrow">Маникюр & Наращивание</p>
+  <h1>Стиль, форма<br>и бережный уход.</h1>
+
+  <button class="primary" style="margin-top:20px" data-go="services">Записаться на маникюр <span aria-hidden="true">↗</span></button>
+
+  <div class="section-head">
+    <h2>Прайс-лист</h2>
+    <button class="text-btn" data-go="services">Все услуги →</button>
+  </div>
+  <div id="home-services"></div>
+
+  <div class="section-head">
+    <h2>Примеры работ</h2>
+  </div>
+  <div class="works-grid">
+    <div class="work-card"><img src="data:image/jpeg;base64,...(photo 1)..." alt="Работа мастера"><div class="work-info"><span class="work-price">1 800 ₽</span><span class="work-meta">⏱ 1 ч 15 мин</span></div></div>
+    <div class="work-card"><img src="data:image/jpeg;base64,...(photo 2)..." alt="Работа мастера"><div class="work-info"><span class="work-price">1 800 ₽</span><span class="work-meta">⏱ 1 ч 15 мин</span></div></div>
+    <div class="work-card"><img src="data:image/jpeg;base64,...(photo 3)..." alt="Работа мастера"><div class="work-info"><span class="work-price">1 650 ₽</span><span class="work-meta">⏱ 1 ч 30 мин</span></div></div>
+    <div class="work-card"><img src="data:image/jpeg;base64,...(photo 4)..." alt="Работа мастера"><div class="work-info"><span class="work-price">1 700 ₽</span><span class="work-meta">⏱ 1 ч 20 мин</span></div></div>
+    <div class="work-card"><img src="data:image/jpeg;base64,...(photo 5)..." alt="Работа мастера"><div class="work-info"><span class="work-price">2 200 ₽</span><span class="work-meta">⏱ 1 ч 30 мин</span></div></div>
+  </div>
+
+  <div class="master">
+    <div class="avatar">Я</div>
+    <div>
+      <p class="service-name">Ярослава · твой мастер</p>
+      <p class="meta">Москва, м. Новогиреево</p>
+    </div>
+  </div>
+
+  <div class="info-banner">
+    <b>Важно перед визитом:</b><br>
+    • Свое снятие с последующим покрытием — бесплатно.<br>
+    • Опоздание более 20 минут: облегчаем дизайн либо отменяем запись.
+  </div>
+</section>
+
+<section id="services" class="screen" hidden>
+  <h1>Выбери услугу</h1>
+  <p class="intro muted">Основной прайс мастера</p>
+  <div class="step"><span class="on"></span><span></span><span></span></div>
+  <div id="service-list"></div>
+
+  <div class="section-head" style="margin-top:24px">
+    <h2>Дополнительный дизайн</h2>
+    <span class="meta">по желанию</span>
+  </div>
+  <div id="addons-list"></div>
+
+  <button id="service-next" class="primary action" disabled>Выбрать время →</button>
+</section>
+
+<section id="datetime" class="screen" hidden>
+  <button class="back" data-go="services">← К услугам</button>
+  <h1>Найди своё время</h1>
+  <div class="step"><span class="on"></span><span class="on"></span><span></span></div>
+  <div id="chosen-service" class="selection"></div>
+  <div class="calendar-title">
+    <button id="prev-month" class="month-btn" aria-label="Предыдущий месяц">‹</button>
+    <h2 id="month-title" style="font-size:17px"></h2>
+    <button id="next-month" class="month-btn" aria-label="Следующий месяц">›</button>
+  </div>
+  <div id="calendar" class="calendar"></div>
+  <div class="section-head" style="margin-top:25px"><h2 style="font-size:17px">Свободное время</h2></div>
+  <p id="time-hint" class="fine">Выбери дату в календаре.</p>
+  <div id="times" class="times"></div>
+  <button id="time-next" class="primary action" disabled>Продолжить →</button>
+</section>
+
+<section id="confirm" class="screen" hidden>
+  <button class="back" data-go="datetime">← К выбору времени</button>
+  <h1>Всё верно?</h1>
+  <div class="step"><span class="on"></span><span class="on"></span><span class="on"></span></div>
+  <div id="summary" class="summary"></div>
+  <form id="booking-form">
+    <label class="label" for="name">Как к тебе обращаться</label>
+    <input id="name" name="name" placeholder="Твоё имя" autocomplete="off" maxlength="50" required>
+    <label class="label" for="tg-user">Telegram для связи</label>
+    <input id="tg-user" name="tg" placeholder="@username" autocomplete="off" maxlength="50">
+    <button class="primary" type="submit" style="margin-top:20px;">Подтвердить запись</button>
+  </form>
+  <p id="form-error" class="error" role="alert"></p>
+</section>
+
+<section id="success" class="screen" hidden>
+  <div class="success-icon">✓</div>
+  <h1>Жду на ноготочки!</h1>
+  <p class="intro muted">Запись сформирована.</p>
+  <div id="success-summary" class="summary"></div>
+  <button class="primary" data-go="bookings">Посмотреть мою запись</button>
+  <button class="secondary" style="margin-top:10px" data-go="home">На главную</button>
+</section>
+
+<section id="bookings" class="screen" hidden>
+  <h1>Мои записи</h1>
+  <div id="bookings-content"></div>
+</section>
+</main>
+
+<nav aria-label="Основная навигация">
+  <div class="nav-inner">
+    <button data-nav="home" class="active"><svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>Главная</button>
+    <button data-nav="services"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4m10-4v4M3 11h18m-12 5h6m-3-3v6"/></svg>Записаться</button>
+    <button data-nav="bookings"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg>Мои записи</button>
+  </div>
+</nav>
+<div id="toast" class="toast" role="status" hidden></div>
+<script>
+'use strict';
+let lastTap = 0;
+document.addEventListener('touchend', e => {
+  const now = Date.now();
+  if (now - lastTap <= 300) { e.preventDefault(); }
+  lastTap = now;
+}, {passive: false});
+document.addEventListener('gesturestart', e => e.preventDefault());
+
+const tg = window.Telegram?.WebApp;
+tg?.ready();
+tg?.expand();
+
+const services = [
+  { id: 'hygiene', name: 'Гигиенический маникюр', description: 'Без покрытия / укрепление базой, топом', minutes: 45, price: 700 },
+  { id: 'cover', name: 'Маникюр с покрытием', description: 'Укрепление гелем / гель-лаком', minutes: 60, price: 800 },
+  { id: 'extend_no_design', name: 'Маникюр с наращиванием (без дизайна)', description: 'Длина / укрепление / однотон', minutes: 90, price: 1100 },
+  { id: 'extend_design', name: 'Маникюр с наращиванием и дизайном', description: 'Длина / дизайн / укрепление', minutes: 120, price: 1500 },
+  { id: 'foreign_removal', name: 'Чужое снятие', description: 'Свое с последующим покрытием — 0 ₽', minutes: 25, price: 400 }
+];
+
+const addons = [
+  { id: 'airbrush', name: 'Дизайн аэрографом', price: 300 },
+  { id: 'nonstandard', name: 'Нестандартные формы (стилеты/экстра)', price: 300 },
+  { id: 'french', name: 'Френч', price: 200 },
+  { id: 'hand_draw', name: 'Рисунки от руки', price: 200 },
+  { id: 'sliders', name: 'Слайдеры (2 шт)', price: 100 },
+  { id: 'charms', name: 'Объемные фигурки (1 шт)', price: 40 }
+];
+
+const $ = id => document.getElementById(id);
+const money = n => n.toLocaleString('ru-RU') + ' ₽';
+const today = new Date(); today.setHours(0,0,0,0);
+
+const state = {
+  service: null,
+  addons: [],
+  date: null,
+  time: null,
+  booking: null,
+  rescheduling: false,
+  month: new Date(today.getFullYear(), today.getMonth(), 1)
+};
+
+function escapeText(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function duration(n){const h=Math.floor(n/60),m=n%60;return(h?h+' ч':'')+(h&&m?' ':'')+(m?m+' мин':'')}
+
+function getTotalPrice() {
+  const base = state.service ? state.service.price : 0;
+  return base + state.addons.reduce((acc, a) => acc + a.price, 0);
+}
+
+function go(id){
+  document.querySelectorAll('.screen').forEach(el=>el.hidden=el.id!==id);
+  const nav=id==='home'?'home':id==='bookings'||id==='success'?'bookings':'services';
+  document.querySelectorAll('[data-nav]').forEach(b=>{
+    const active=b.dataset.nav===nav;
+    b.classList.toggle('active',active);
+    if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');
+  });
+  if(id==='services')renderServices();
+  if(id==='datetime')renderCalendar();
+  if(id==='confirm')renderSummary();
+  if(id==='bookings')renderBookings();
+  window.scrollTo(0,0);
+}
+document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
+document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>go(b.dataset.nav));
+
+function renderServices(){
+  $('service-list').innerHTML = services.map(s => `
+    <button class="service ${state.service?.id===s.id?'selected':''}" data-service="${s.id}">
+      <div class="service-top">
+        <span class="service-name">${s.name}</span>
+        <span class="radio"></span>
+      </div>
+      <p class="meta">${s.description}</p>
+      <div class="service-bottom">
+        <span class="meta">${duration(s.minutes)}</span>
+        <span class="price">${money(s.price)}</span>
+      </div>
+    </button>
+  `).join('');
+
+  document.querySelectorAll('[data-service]').forEach(b=>{
+    b.onclick = () => {
+      state.service = services.find(s=>s.id===b.dataset.service);
+      state.time = null;
+      renderServices();
+    };
+  });
+
+  $('addons-list').innerHTML = addons.map(a => {
+    const isChecked = state.addons.some(item => item.id === a.id);
+    return `
+      <div class="addon-item ${isChecked?'checked':''}" data-addon="${a.id}">
+        <div style="display:flex;align-items:center;">
+          <div class="custom-check">${isChecked?'✓':''}</div>
+          <span>${a.name}</span>
+        </div>
+        <span class="price">+${money(a.price)}</span>
+      </div>
+    `;
+  }).join('');
+
+  document.querySelectorAll('[data-addon]').forEach(item => {
+    item.onclick = () => {
+      const a = addons.find(x => x.id === item.dataset.addon);
+      const idx = state.addons.findIndex(x => x.id === a.id);
+      if (idx >= 0) state.addons.splice(idx, 1);
+      else state.addons.push(a);
+      renderServices();
+    };
+  });
+
+  $('service-next').disabled = !state.service;
+}
+
+$('home-services').innerHTML = services.slice(0,4).map(s => `
+  <div class="feature-row">
+    <div>
+      <p class="service-name">${s.name}</p>
+      <p class="meta">${s.description}</p>
+    </div>
+    <span class="price">${money(s.price)}</span>
+  </div>
+`).join('');
+
+$('service-next').onclick = () => { if(state.service) go('datetime'); };
+
+function key(d){return[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')}
+function localDate(s){const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)}
+function prettyDate(s){return localDate(s).toLocaleDateString('ru-RU',{day:'numeric',month:'long',weekday:'short'})}
+
+function renderCalendar(){
+  if(!state.service){go('services');return}
+  const addonsText = state.addons.length ? ' + ' + state.addons.map(a=>a.name).join(', ') : '';
+  $('chosen-service').textContent = state.service.name + addonsText + ' · ' + duration(state.service.minutes) + ' · ' + money(getTotalPrice());
+  $('month-title').textContent = state.month.toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
+  $('prev-month').disabled = state.month.getTime() <= new Date(today.getFullYear(),today.getMonth(),1).getTime();
+  $('next-month').disabled = state.month.getTime() >= new Date(today.getFullYear(),today.getMonth()+2,1).getTime();
+
+  let cells = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map(w=>'<span class="weekday">'+w+'</span>').join('');
+  const first = (state.month.getDay()+6)%7;
+  const total = new Date(state.month.getFullYear(),state.month.getMonth()+1,0).getDate();
+  cells += '<span></span>'.repeat(first);
+
+  for(let n=1; n<=total; n++){
+    const d = new Date(state.month.getFullYear(),state.month.getMonth(),n);
+    const k = key(d);
+    const disabled = d < today;
+    cells += `<button class="day ${state.date===k?'selected':''}" data-date="${k}" ${disabled?'disabled':''}>${n}</button>`;
+  }
+  $('calendar').innerHTML = cells;
+
+  document.querySelectorAll('[data-date]').forEach(b=>{
+    b.onclick = () => {
+      state.date = b.dataset.date;
+      state.time = null;
+      renderCalendar();
+    };
+  });
+  renderTimes();
+}
+
+function renderTimes(){
+  if(!state.date){
+    $('time-hint').textContent = 'Выбери дату в календаре.';
+    $('times').replaceChildren();
+    $('time-next').disabled = true;
+    return;
+  }
+  $('time-hint').textContent = prettyDate(state.date);
+  const list = ['11:00', '13:30', '16:00', '18:30', '20:30'];
+  $('times').innerHTML = list.map(t => `<button class="time ${state.time===t?'selected':''}" data-time="${t}">${t}</button>`).join('');
+  
+  document.querySelectorAll('[data-time]').forEach(b=>{
+    b.onclick = () => {
+      state.time = b.dataset.time;
+      renderTimes();
+    };
+  });
+  $('time-next').disabled = !state.time;
+}
+
+$('prev-month').onclick = () => { state.month = new Date(state.month.getFullYear(), state.month.getMonth()-1, 1); renderCalendar(); };
+$('next-month').onclick = () => { state.month = new Date(state.month.getFullYear(), state.month.getMonth()+1, 1); renderCalendar(); };
+$('time-next').onclick = () => { if(state.date && state.time) go('confirm'); };
+
+function summary(b){
+  const addonsHtml = b.addons && b.addons.length ? `<div class="summary-row"><span>Дизайн/Допы</span><span>${b.addons.map(a=>a.name).join('<br>')}</span></div>` : '';
+  return `
+    <p class="service-name">${escapeText(b.service.name)}</p>
+    ${addonsHtml}
+    <div class="summary-row"><span>Дата</span><span>${prettyDate(b.date)}</span></div>
+    <div class="summary-row"><span>Время</span><span>${b.time} · ${duration(b.service.minutes)}</span></div>
+    <div class="summary-row"><span>Мастер</span><span>Ярослава (Новогиреево)</span></div>
+    <div class="summary-row total"><span>Итого</span><span>${money(b.total || b.service.price)}</span></div>
+  `;
+}
+
+function renderSummary(){
+  if(!state.service || !state.date || !state.time){ go('services'); return; }
+  $('summary').innerHTML = summary({ service: state.service, addons: state.addons, date: state.date, time: state.time, total: getTotalPrice() });
+  $('form-error').textContent = '';
+  if(state.rescheduling && state.booking) {
+    $('name').value = state.booking.name || '';
+    $('tg-user').value = state.booking.tg || '';
+  }
+}
+
+$('booking-form').onsubmit = e => {
+  e.preventDefault();
+  if(!state.service || !state.date || !state.time) return;
+  const name = $('name').value.trim();
+  const tgUser = $('tg-user').value.trim();
+  if(!name){ $('form-error').textContent = 'Укажи имя.'; return; }
+
+  state.booking = {
+    service: { ...state.service },
+    addons: [ ...state.addons ],
+    date: state.date,
+    time: state.time,
+    total: getTotalPrice(),
+    name,
+    tg: tgUser
+  };
+  state.rescheduling = false;
+  $('success-summary').innerHTML = summary(state.booking);
+  go('success');
+};
+
+function renderBookings(){
+  const b = state.booking;
+  if(!b){
+    $('bookings-content').innerHTML = '<div class="empty"><h2>Здесь будет твой визит</h2><p>Выбери услугу и удобное время.</p><button id="empty-book" class="primary">Выбрать услугу</button></div>';
+    $('empty-book').onclick = () => go('services');
+    return;
+  }
+  $('bookings-content').innerHTML = `
+    <div class="summary">
+      ${summary(b)}
+      <div style="font-size:12px;color:var(--muted);margin-top:10px;">Клиент: ${escapeText(b.name)} ${b.tg ? '('+escapeText(b.tg)+')' : ''}</div>
+      <div class="booking-actions">
+        <button id="reschedule" class="secondary">Перенести</button>
+        <button id="cancel-book" class="secondary">Отменить</button>
+      </div>
+    </div>
+  `;
+  $('reschedule').onclick = () => {
+    state.service = b.service;
+    state.addons = b.addons || [];
+    state.date = b.date;
+    state.time = b.time;
+    state.month = new Date(localDate(b.date).getFullYear(), localDate(b.date).getMonth(), 1);
+    state.rescheduling = true;
+    go('datetime');
+  };
+  $('cancel-book').onclick = () => {
+    if(window.confirm('Отменить запись?')){
+      state.booking = null;
+      state.rescheduling = false;
+      renderBookings();
+      toast('Запись отменена');
+    }
+  };
+}
+
+let toastTimer;
+function toast(text){
+  $('toast').textContent = text;
+  $('toast').hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>$('toast').hidden = true, 2500);
+}
+
+renderServices();
+go('home');
+</script></body></html>
