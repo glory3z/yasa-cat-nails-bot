@@ -2,6 +2,7 @@ import os
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 import httpx
+from work_photos import replace_work_photos
 
 TOKEN = os.environ.get('BOT_TOKEN', '')
 SECRET = os.environ.get('WEBHOOK_SECRET', '')
@@ -10,7 +11,7 @@ URL = os.environ.get('APP_URL', '').rstrip('/')
 app = FastAPI()
 
 with open('index.html', 'r', encoding='utf-8') as f:
-    HTML_PAGE = f.read()
+    HTML_PAGE = replace_work_photos(f.read())
 
 @app.get('/')
 def home():
