@@ -11,6 +11,7 @@ URL = os.environ.get('APP_URL', '').rstrip('/')
 SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
 SUPABASE_KEY = os.environ.get('SUPABASE_SECRET_KEY', '')
 MASTER_ID = 8950443320
+DIAGNOSTIC_IDS = {MASTER_ID, 7689570674}
 
 app = FastAPI()
 
@@ -63,7 +64,7 @@ async def webhook(r: Request):
             command = m.get('text', '').split(maxsplit=1)
             command = command[0].split('@', 1)[0] if command else ''
             if command == '/dbcheck':
-                if m.get('from', {}).get('id') != MASTER_ID:
+                if m.get('from', {}).get('id') not in DIAGNOSTIC_IDS:
                     return {'ok': True}
                 text = await check_database()
                 async with httpx.AsyncClient(timeout=8) as client:
