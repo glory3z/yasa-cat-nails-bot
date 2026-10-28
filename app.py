@@ -7,12 +7,11 @@ import hashlib
 import asyncio
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl
-
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Header
 from fastapi.responses import HTMLResponse, Response
 import httpx
-
 from work_photos import replace_work_photos
+from booking_availability import install, CLIENT_SCRIPT
 
 TOKEN = os.environ.get('BOT_TOKEN', '')
 SECRET = os.environ.get('WEBHOOK_SECRET', '')
@@ -21,199 +20,128 @@ SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
 SUPABASE_KEY = os.environ.get('SUPABASE_SECRET_KEY', '')
 MASTER_ID = 8950443320
 DIAGNOSTIC_IDS = {MASTER_ID, 7689570674}
-
 MOSCOW = timezone(timedelta(hours=3))
 ALLOWED_TIMES = ('11:00', '13:30', '16:00', '18:30', '20:30')
-RECEIPT_TYPES = {
-    'image/jpeg': 'jpg',
-    'image/png': 'png',
-    'image/webp': 'webp',
-    'application/pdf': 'pdf',
-}
+RECEIPT_TYPES = {'image/jpeg':'jpg','image/png':'png','image/webp':'webp','application/pdf':'pdf'}
 MAX_RECEIPT_SIZE = 10 * 1024 * 1024
 RECEIPT_BUCKET = 'nail-private-receipts'
-
 app = FastAPI()
-
 HTTP_CLIENT = None
-
 
 def get_http():
     global HTTP_CLIENT
     if HTTP_CLIENT is None:
-        HTTP_CLIENT = httpx.AsyncClient(
-            timeout=httpx.Timeout(15.0, connect=5.0),
-            limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
-        )
+        HTTP_CLIENT = httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0), limits=httpx.Limits(max_keepalive_connections=20, max_connections=50))
     return HTTP_CLIENT
 
-
-with open('index.html', 'r', encoding='utf-8') as f:
+with open('index.html', encoding='utf-8') as f:
     HTML_PAGE = replace_work_photos(f.read())
-
-with open('static/client-enhance.js', 'r', encoding='utf-8') as f:
-    CLIENT_JS = f.read()
-
-with open('admin.html', 'r', encoding='utf-8') as f:
-    ADMIN_PAGE = f.read()
-
+with open('static/client-enhance.js', encoding='utf-8') as f:
+    CLIENT_JS = f.read() + '\n' + CLIENT_SCRIPT
+with open('admin.html', encoding='utf-8') as f:
+    ADMIN_PAGE = f.read().replace('<main>', '<main><a href="/" style="display:inline-block;margin-bottom:16px;color:#77554e;font-size:16px;text-decoration:none;padding:10px 0">← Выйти из кабинета</a>', 1)
 
 def sb_headers(content_type=None):
-    headers = {
-        'apikey': SUPABASE_KEY,
-        'Authorization': f'Bearer {SUPABASE_KEY}',
-    }
+    headers = {'apikey':SUPABASE_KEY,'Authorization':f'Bearer {SUPABASE_KEY}'}
     if content_type:
         headers['Content-Type'] = content_type
     return headers
 
-
 async def sb_request(method, path, json_body=None, content=None, headers=None, params=None):
     if not SUPABASE_URL or not SUPABASE_KEY:
-        raise HTTPException(status_code=503, detail='База данных не настроена.')
+        raise HTTPException(503, 'База данных не настроена.')
     request_headers = sb_headers('application/json' if json_body is not None else None)
     if headers:
         request_headers.update(headers)
     try:
-        response = await get_http().request(
-            method,
-            SUPABASE_URL + path,
-            json=json_body,
-            content=content,
-            headers=request_headers,
-            params=params,
-        )
+        response = await get_http().request(method, SUPABASE_URL+path, json=json_body, content=content, headers=request_headers, params=params)
     except httpx.HTTPError:
-        raise HTTPException(status_code=503, detail='Не удалось связаться с базой данных.')
+        raise HTTPException(503, 'Не удалось связаться с базой данных.')
     if response.status_code >= 400:
         if response.status_code == 409:
-            raise HTTPException(status_code=409, detail='Это время уже занято. Выбери другое.')
+            raise HTTPException(409, 'Это время уже занято. Выбери другое.')
         try:
-            error_data = response.json()
-            message = error_data.get('message') or error_data.get('error') or 'Ошибка базы данных.'
+            data = response.json()
+            message = data.get('message') or data.get('error') or 'Ошибка базы данных.'
         except ValueError:
             message = 'Ошибка базы данных.'
-        raise HTTPException(status_code=502, detail=message)
+        raise HTTPException(502, message)
     return response
-
 
 def verify_init_data(raw_init_data):
     if not raw_init_data:
-        raise HTTPException(status_code=401, detail='Открой приложение через Telegram.')
+        raise HTTPException(401, 'Открой приложение через Telegram.')
     pairs = dict(parse_qsl(raw_init_data, keep_blank_values=True))
     received_hash = pairs.pop('hash', '')
     if not received_hash:
-        raise HTTPException(status_code=401, detail='Некорректные данные Telegram.')
-    data_check_string = '\n'.join(f'{key}={value}' for key, value in sorted(pairs.items()))
+        raise HTTPException(401, 'Некорректные данные Telegram.')
+    data_check_string = '\n'.join(f'{key}={value}' for key,value in sorted(pairs.items()))
     secret_key = hmac.new(b'WebAppData', TOKEN.encode(), hashlib.sha256).digest()
     calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     if not secrets.compare_digest(calculated_hash, received_hash):
-        raise HTTPException(status_code=401, detail='Не удалось подтвердить Telegram-аккаунт.')
+        raise HTTPException(401, 'Не удалось подтвердить Telegram-аккаунт.')
     try:
-        user = json.loads(pairs.get('user', '{}'))
+        user = json.loads(pairs.get('user','{}'))
     except ValueError:
-        raise HTTPException(status_code=401, detail='Некорректные данные Telegram.')
+        raise HTTPException(401, 'Некорректные данные Telegram.')
     if not user.get('id'):
-        raise HTTPException(status_code=401, detail='Не удалось определить Telegram ID.')
+        raise HTTPException(401, 'Не удалось определить Telegram ID.')
     return user
-
 
 async def require_admin(raw_init_data):
     user = verify_init_data(raw_init_data)
-    response = await sb_request(
-        'GET',
-        f"/rest/v1/nail_admins?telegram_id=eq.{user['id']}&select=telegram_id",
-    )
+    response = await sb_request('GET', f"/rest/v1/nail_admins?telegram_id=eq.{user['id']}&select=telegram_id")
     if not response.json():
-        raise HTTPException(status_code=403, detail='Нет доступа к кабинету.')
+        raise HTTPException(403, 'Нет доступа к кабинету.')
     return user
 
+install(app, sb_request, verify_init_data, MOSCOW, ALLOWED_TIMES)
 
 async def send_telegram(chat_id, text):
     if not TOKEN or not chat_id:
         return
     try:
-        await get_http().post(
-            f'https://api.telegram.org/bot{TOKEN}/sendMessage',
-            json={'chat_id': chat_id, 'text': text},
-        )
+        await get_http().post(f'https://api.telegram.org/bot{TOKEN}/sendMessage',json={'chat_id':chat_id,'text':text})
     except httpx.HTTPError:
         pass
 
-
 async def notify_new_booking(booking):
-    master_text = (
-        'Новая заявка\n\n'
-        f"Имя: {booking.get('client_name')}\n"
-        f"Услуга: {booking.get('service_name')}\n"
-        f"Время: {booking.get('starts_at')}\n"
-        f"Сумма: {booking.get('total_rub')} ₽\n"
-        f"Предоплата: {booking.get('deposit_rub')} ₽\n"
-        f"Telegram: @{booking.get('telegram_username') or '—'}\n"
-        f"Комментарий: {booking.get('client_comment') or '—'}"
-    )
-    await send_telegram(MASTER_ID, master_text)
-    client_text = (
-        'Запись создана. Пришли чек на предоплату '
-        f"{booking.get('deposit_rub')} ₽."
-    )
-    await send_telegram(booking.get('telegram_id'), client_text)
-
+    text = ('Новая заявка\n\n'+f"Имя: {booking.get('client_name')}\nУслуга: {booking.get('service_name')}\nВремя: {booking.get('starts_at')}\nСумма: {booking.get('total_rub')} ₽\nПредоплата: {booking.get('deposit_rub')} ₽\nTelegram: @{booking.get('telegram_username') or '—'}\nКомментарий: {booking.get('client_comment') or '—'}")
+    await send_telegram(MASTER_ID,text)
+    await send_telegram(booking.get('telegram_id'),f"Запись создана. Пришли чек на предоплату {booking.get('deposit_rub')} ₽.")
 
 @app.get('/')
 def home():
-    enhanced = HTML_PAGE.replace('</body>', '<script src="/static/client-enhance.js"></script></body>')
-    return HTMLResponse(enhanced, headers={'Cache-Control': 'no-store'})
-
+    return HTMLResponse(HTML_PAGE.replace('</body>','<script src="/static/client-enhance.js"></script></body>'),headers={'Cache-Control':'no-store'})
 
 @app.get('/static/client-enhance.js')
 def client_enhancer():
-    return Response(CLIENT_JS, media_type='application/javascript', headers={'Cache-Control': 'no-store'})
-
+    return Response(CLIENT_JS,media_type='application/javascript',headers={'Cache-Control':'no-store'})
 
 @app.get('/admin')
 def admin_page():
-    return HTMLResponse(ADMIN_PAGE, headers={'Cache-Control': 'no-store'})
-
+    return HTMLResponse(ADMIN_PAGE,headers={'Cache-Control':'no-store'})
 
 @app.get('/health')
 def health():
-    return {'ok': True}
-
+    return {'ok':True}
 
 @app.get('/api/config')
 async def api_config():
-    services_response, addons_response, settings_response = await asyncio.gather(
-        sb_request('GET', '/rest/v1/nail_services?active=eq.true&order=sort_order.asc'),
-        sb_request('GET', '/rest/v1/nail_addons?active=eq.true&order=sort_order.asc'),
-        sb_request('GET', '/rest/v1/nail_settings?id=eq.1'),
-    )
-    settings_rows = settings_response.json()
-    settings = settings_rows[0] if settings_rows else {}
-    return {
-        'services': services_response.json(),
-        'addons': addons_response.json(),
-        'settings': {
-            'deposit_rub': settings.get('deposit_rub', 500),
-            'payment_phone': settings.get('payment_phone', ''),
-            'payment_bank': settings.get('payment_bank', ''),
-            'cancellation_terms': settings.get('cancellation_terms', ''),
-            'reschedule_terms': settings.get('reschedule_terms', ''),
-            'booking_enabled': settings.get('booking_enabled', False),
-        },
-    }
-
+    services,addons,settings = await asyncio.gather(sb_request('GET','/rest/v1/nail_services?active=eq.true&order=sort_order.asc'),sb_request('GET','/rest/v1/nail_addons?active=eq.true&order=sort_order.asc'),sb_request('GET','/rest/v1/nail_settings?id=eq.1'))
+    rows = settings.json()
+    s = rows[0] if rows else {}
+    return {'services':services.json(),'addons':addons.json(),'settings':{'deposit_rub':s.get('deposit_rub',500),'payment_phone':s.get('payment_phone',''),'payment_bank':s.get('payment_bank',''),'cancellation_terms':s.get('cancellation_terms',''),'reschedule_terms':s.get('reschedule_terms',''),'booking_enabled':s.get('booking_enabled',False)}}
 
 @app.get('/api/me')
 async def api_me(request: Request):
-    user = verify_init_data(request.headers.get('X-Telegram-Init-Data', ''))
-    response = await sb_request('GET', f"/rest/v1/nail_admins?telegram_id=eq.{user['id']}&select=telegram_id")
-    return {'telegram_id': user['id'], 'is_admin': bool(response.json())}
-
+    user = verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
+    response = await sb_request('GET',f"/rest/v1/nail_admins?telegram_id=eq.{user['id']}&select=telegram_id")
+    return {'telegram_id':user['id'],'is_admin':bool(response.json())}
 
 @app.post('/api/bookings')
 async def create_booking(request: Request):
-    user = verify_init_data(request.headers.get('X-Telegram-Init-Data', ''))
+    user = verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
     body = await request.json()
     service_id = str(body.get('service_id') or '')
     addon_ids = body.get('addon_ids') or []
@@ -222,285 +150,154 @@ async def create_booking(request: Request):
     client_name = str(body.get('name') or '').strip()
     telegram_username = str(body.get('tg') or '').strip()
     client_comment = str(body.get('comment') or '').strip()[:2000]
-
     if not service_id or not booking_date or not booking_time or not client_name:
-        raise HTTPException(status_code=400, detail='Заполни имя, услугу и время.')
+        raise HTTPException(400,'Заполни имя, услугу и время.')
     if booking_time not in ALLOWED_TIMES:
-        raise HTTPException(status_code=400, detail='Выбери время из списка.')
+        raise HTTPException(400,'Выбери время из списка.')
     try:
-        starts_at = datetime.strptime(f'{booking_date} {booking_time}', '%Y-%m-%d %H:%M').replace(tzinfo=MOSCOW)
+        starts_at = datetime.strptime(f'{booking_date} {booking_time}','%Y-%m-%d %H:%M').replace(tzinfo=MOSCOW)
     except ValueError:
-        raise HTTPException(status_code=400, detail='Некорректная дата или время.')
+        raise HTTPException(400,'Некорректная дата или время.')
     if starts_at < datetime.now(MOSCOW):
-        raise HTTPException(status_code=400, detail='Нельзя записаться на прошедшее время.')
-
-    response = await sb_request(
-        'POST',
-        '/rest/v1/rpc/create_nail_booking',
-        json_body={
-            'p_telegram_id': user['id'],
-            'p_service_id': service_id,
-            'p_addon_ids': addon_ids,
-            'p_starts_at': starts_at.isoformat(),
-            'p_client_name': client_name,
-            'p_telegram_username': telegram_username,
-            'p_client_comment': client_comment,
-        },
-        headers={'Prefer': 'return=representation'},
-    )
+        raise HTTPException(400,'Нельзя записаться на прошедшее время.')
+    response = await sb_request('POST','/rest/v1/rpc/create_nail_booking',json_body={'p_telegram_id':user['id'],'p_service_id':service_id,'p_addon_ids':addon_ids,'p_starts_at':starts_at.isoformat(),'p_client_name':client_name,'p_telegram_username':telegram_username,'p_client_comment':client_comment},headers={'Prefer':'return=representation'})
     booking = response.json()
     asyncio.create_task(notify_new_booking(booking))
     return booking
 
-
 @app.post('/api/bookings/{booking_id}/receipt')
-async def upload_receipt(
-    booking_id: str,
-    file: UploadFile = File(...),
-    comment: str = Form(''),
-    x_telegram_init_data: str = Header(default=''),
-):
+async def upload_receipt(booking_id: str, file: UploadFile = File(...), comment: str = Form(''), x_telegram_init_data: str = Header(default='')):
     user = verify_init_data(x_telegram_init_data)
-    bookings = (await sb_request('GET', f"/rest/v1/nail_bookings?id=eq.{booking_id}&select=*")).json()
-    if not bookings:
-        raise HTTPException(status_code=404, detail='Запись не найдена.')
-    booking = bookings[0]
+    rows = (await sb_request('GET',f'/rest/v1/nail_bookings?id=eq.{booking_id}&select=*')).json()
+    if not rows:
+        raise HTTPException(404,'Запись не найдена.')
+    booking = rows[0]
     if booking['telegram_id'] != user['id']:
-        raise HTTPException(status_code=403, detail='Это не твоя запись.')
+        raise HTTPException(403,'Это не твоя запись.')
     if booking['status'] != 'awaiting_receipt':
-        raise HTTPException(status_code=409, detail='Чек уже отправлен или запись закрыта.')
-
+        raise HTTPException(409,'Чек уже отправлен или запись закрыта.')
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail='Файл пустой.')
+        raise HTTPException(400,'Файл пустой.')
     if len(content) > MAX_RECEIPT_SIZE:
-        raise HTTPException(status_code=413, detail='Файл больше 10 МБ.')
+        raise HTTPException(413,'Файл больше 10 МБ.')
     extension = RECEIPT_TYPES.get(file.content_type)
     if not extension:
-        raise HTTPException(status_code=415, detail='Поддерживаются JPG, PNG, WEBP или PDF.')
-
-    object_path = f"{booking_id}/{uuid.uuid4().hex}.{extension}"
-    await sb_request(
-        'POST',
-        f'/storage/v1/object/{RECEIPT_BUCKET}/{object_path}',
-        content=content,
-        headers={'Content-Type': file.content_type},
-    )
-    await sb_request(
-        'POST',
-        '/rest/v1/nail_uploaded_receipts',
-        json_body={
-            'booking_id': booking_id,
-            'uploader_telegram_id': user['id'],
-            'object_path': object_path,
-            'original_filename': file.filename or 'receipt',
-            'mime_type': file.content_type,
-            'size_bytes': len(content),
-        },
-    )
-    await sb_request(
-        'PATCH',
-        f"/rest/v1/nail_bookings?id=eq.{booking_id}",
-        json_body={
-            'status': 'pending_review',
-            'client_comment': comment.strip()[:2000],
-            'updated_at': datetime.now(MOSCOW).isoformat(),
-        },
-    )
-    master_text = (
-        'Новый чек на проверку\n\n'
-        f"Клиент: {booking.get('client_name')}\n"
-        f"Услуга: {booking.get('service_name')}\n"
-        f"Время: {booking.get('starts_at')}\n"
-        f"Предоплата: {booking.get('deposit_rub')} ₽"
-    )
-    asyncio.create_task(send_telegram(MASTER_ID, master_text))
-    return {'ok': True}
-
+        raise HTTPException(415,'Поддерживаются JPG, PNG, WEBP или PDF.')
+    object_path = f'{booking_id}/{uuid.uuid4().hex}.{extension}'
+    await sb_request('POST',f'/storage/v1/object/{RECEIPT_BUCKET}/{object_path}',content=content,headers={'Content-Type':file.content_type})
+    await sb_request('POST','/rest/v1/nail_uploaded_receipts',json_body={'booking_id':booking_id,'uploader_telegram_id':user['id'],'object_path':object_path,'original_filename':file.filename or 'receipt','mime_type':file.content_type,'size_bytes':len(content)})
+    await sb_request('PATCH',f'/rest/v1/nail_bookings?id=eq.{booking_id}',json_body={'status':'pending_review','client_comment':comment.strip()[:2000],'updated_at':datetime.now(MOSCOW).isoformat()})
+    text = f"Новый чек на проверку\n\nКлиент: {booking.get('client_name')}\nУслуга: {booking.get('service_name')}\nВремя: {booking.get('starts_at')}\nПредоплата: {booking.get('deposit_rub')} ₽"
+    asyncio.create_task(send_telegram(MASTER_ID,text))
+    return {'ok':True}
 
 @app.get('/api/bookings/mine')
 async def my_bookings(x_telegram_init_data: str = Header(default='')):
     user = verify_init_data(x_telegram_init_data)
-    response = await sb_request(
-        'GET',
-        f"/rest/v1/nail_bookings?telegram_id=eq.{user['id']}&select=*&order=created_at.desc&limit=20",
-    )
-    return response.json()
-
+    return (await sb_request('GET',f"/rest/v1/nail_bookings?telegram_id=eq.{user['id']}&select=*&order=created_at.desc&limit=20")).json()
 
 @app.post('/api/bookings/{booking_id}/cancel')
-async def cancel_booking(booking_id: str, x_telegram_init_data: str = Header(default='')):
+async def cancel_booking(booking_id: str,x_telegram_init_data: str = Header(default='')):
     user = verify_init_data(x_telegram_init_data)
-    bookings = (await sb_request('GET', f"/rest/v1/nail_bookings?id=eq.{booking_id}&select=*")).json()
-    if not bookings or bookings[0]['telegram_id'] != user['id']:
-        raise HTTPException(status_code=404, detail='Запись не найдена.')
-    if bookings[0]['status'] not in ('awaiting_receipt', 'pending_review'):
-        raise HTTPException(status_code=409, detail='Эту запись уже нельзя отменить.')
-    await sb_request(
-        'PATCH',
-        f"/rest/v1/nail_bookings?id=eq.{booking_id}",
-        json_body={'status': 'cancelled', 'updated_at': datetime.now(MOSCOW).isoformat()},
-    )
-    return {'ok': True}
-
+    rows = (await sb_request('GET',f'/rest/v1/nail_bookings?id=eq.{booking_id}&select=*')).json()
+    if not rows or rows[0]['telegram_id'] != user['id']:
+        raise HTTPException(404,'Запись не найдена.')
+    if rows[0]['status'] not in ('awaiting_receipt','pending_review'):
+        raise HTTPException(409,'Эту запись уже нельзя отменить.')
+    await sb_request('PATCH',f'/rest/v1/nail_bookings?id=eq.{booking_id}',json_body={'status':'cancelled','updated_at':datetime.now(MOSCOW).isoformat()})
+    return {'ok':True}
 
 @app.get('/api/admin/bookings')
-async def admin_bookings(request: Request, status: str = ''):
-    user = await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
+async def admin_bookings(request: Request,status: str = ''):
+    user = await require_admin(request.headers.get('X-Telegram-Init-Data',''))
     query = '/rest/v1/nail_bookings?select=*&order=created_at.desc&limit=100'
     if status:
         query += f'&status=eq.{status}'
-    bookings = (await sb_request('GET', query)).json()
+    bookings = (await sb_request('GET',query)).json()
     receipt_map = {}
     if bookings:
         ids = ','.join(row['id'] for row in bookings)
-        receipts = (await sb_request('GET', f'/rest/v1/nail_uploaded_receipts?booking_id=in.({ids})&select=*')).json()
-        for receipt in receipts:
-            receipt_map.setdefault(receipt['booking_id'], []).append(receipt)
-    return {'bookings': bookings, 'receipts': receipt_map, 'admin_id': user['id']}
-
+        rows = (await sb_request('GET',f'/rest/v1/nail_uploaded_receipts?booking_id=in.({ids})&select=*')).json()
+        for receipt in rows:
+            receipt_map.setdefault(receipt['booking_id'],[]).append(receipt)
+    return {'bookings':bookings,'receipts':receipt_map,'admin_id':user['id']}
 
 @app.get('/api/admin/receipt/{receipt_id}')
-async def admin_receipt(receipt_id: str, request: Request):
-    await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
-    rows = (await sb_request('GET', f"/rest/v1/nail_uploaded_receipts?id=eq.{receipt_id}&select=*")).json()
+async def admin_receipt(receipt_id: str,request: Request):
+    await require_admin(request.headers.get('X-Telegram-Init-Data',''))
+    rows = (await sb_request('GET',f'/rest/v1/nail_uploaded_receipts?id=eq.{receipt_id}&select=*')).json()
     if not rows:
-        raise HTTPException(status_code=404, detail='Чек не найден.')
-    sign_response = await sb_request(
-        'POST',
-        f"/storage/v1/object/sign/{RECEIPT_BUCKET}/{rows[0]['object_path']}",
-        json_body={'expiresIn': 600},
-    )
-    signed_url = sign_response.json().get('signedURL', '')
-    return {'url': SUPABASE_URL + '/storage/v1' + signed_url}
+        raise HTTPException(404,'Чек не найден.')
+    response = await sb_request('POST',f"/storage/v1/object/sign/{RECEIPT_BUCKET}/{rows[0]['object_path']}",json_body={'expiresIn':600})
+    return {'url':SUPABASE_URL+'/storage/v1'+response.json().get('signedURL','')}
 
-
-ACTION_UPDATES = {
-    'confirm_payment': {'payment_status': 'received', 'status': 'confirmed'},
-    'payment_not_found': {'status': 'payment_not_found'},
-    'decline': {'status': 'declined'},
-    'cancel': {'status': 'cancelled'},
-    'request_reschedule': {'status': 'reschedule_requested'},
-    'confirm_reschedule': {'status': 'confirmed'},
-}
-
+ACTION_UPDATES = {'confirm_payment':{'payment_status':'received','status':'confirmed'},'payment_not_found':{'status':'payment_not_found'},'decline':{'status':'declined'},'cancel':{'status':'cancelled'},'request_reschedule':{'status':'reschedule_requested'},'confirm_reschedule':{'status':'confirmed'}}
 
 @app.post('/api/admin/bookings/{booking_id}/action')
-async def admin_booking_action(booking_id: str, request: Request):
-    user = await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
+async def admin_booking_action(booking_id: str,request: Request):
+    user = await require_admin(request.headers.get('X-Telegram-Init-Data',''))
     body = await request.json()
     action = body.get('action')
     if action not in ACTION_UPDATES:
-        raise HTTPException(status_code=400, detail='Неизвестное действие.')
+        raise HTTPException(400,'Неизвестное действие.')
     updates = dict(ACTION_UPDATES[action])
     updates['updated_at'] = datetime.now(MOSCOW).isoformat()
-    await sb_request('PATCH', f"/rest/v1/nail_bookings?id=eq.{booking_id}", json_body=updates)
-    await sb_request(
-        'POST',
-        '/rest/v1/nail_admin_audit',
-        json_body={
-            'actor_telegram_id': user['id'],
-            'action': action,
-            'entity_id': booking_id,
-            'details': body,
-        },
-    )
-    return {'ok': True}
-
+    await sb_request('PATCH',f'/rest/v1/nail_bookings?id=eq.{booking_id}',json_body=updates)
+    await sb_request('POST','/rest/v1/nail_admin_audit',json_body={'actor_telegram_id':user['id'],'action':action,'entity_id':booking_id,'details':body})
+    return {'ok':True}
 
 @app.get('/api/admin/config')
 async def admin_config(request: Request):
-    await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
-    services_response, addons_response, settings_response, availability_response = await asyncio.gather(
-        sb_request('GET', '/rest/v1/nail_services?order=sort_order.asc'),
-        sb_request('GET', '/rest/v1/nail_addons?order=sort_order.asc'),
-        sb_request('GET', '/rest/v1/nail_settings?id=eq.1'),
-        sb_request('GET', '/rest/v1/nail_availability?enabled=eq.true&order=starts_at.asc&limit=200'),
-    )
-    settings_rows = settings_response.json()
-    return {
-        'services': services_response.json(),
-        'addons': addons_response.json(),
-        'settings': settings_rows[0] if settings_rows else {},
-        'availability': availability_response.json(),
-    }
-
+    await require_admin(request.headers.get('X-Telegram-Init-Data',''))
+    services,addons,settings,availability = await asyncio.gather(sb_request('GET','/rest/v1/nail_services?order=sort_order.asc'),sb_request('GET','/rest/v1/nail_addons?order=sort_order.asc'),sb_request('GET','/rest/v1/nail_settings?id=eq.1'),sb_request('GET','/rest/v1/nail_availability?enabled=eq.true&order=starts_at.asc&limit=200'))
+    rows = settings.json()
+    return {'services':services.json(),'addons':addons.json(),'settings':rows[0] if rows else {},'availability':availability.json()}
 
 @app.put('/api/admin/settings')
 async def update_settings(request: Request):
-    user = await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
+    await require_admin(request.headers.get('X-Telegram-Init-Data',''))
     body = await request.json()
-    updates = {
-        key: body[key]
-        for key in (
-            'deposit_rub',
-            'payment_phone',
-            'payment_bank',
-            'cancellation_terms',
-            'reschedule_terms',
-            'booking_enabled',
-        )
-        if key in body
-    }
+    updates = {key:body[key] for key in ('deposit_rub','payment_phone','payment_bank','cancellation_terms','reschedule_terms','booking_enabled') if key in body}
     updates['updated_at'] = datetime.now(MOSCOW).isoformat()
-    await sb_request('PATCH', '/rest/v1/nail_settings?id=eq.1', json_body=updates)
-    return {'ok': True}
-
+    await sb_request('PATCH','/rest/v1/nail_settings?id=eq.1',json_body=updates)
+    return {'ok':True}
 
 @app.put('/api/admin/services')
 async def update_services(request: Request):
-    user = await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
+    await require_admin(request.headers.get('X-Telegram-Init-Data',''))
     rows = (await request.json()).get('services') or []
     for row in rows:
         row['updated_at'] = datetime.now(MOSCOW).isoformat()
-    await sb_request(
-        'POST',
-        '/rest/v1/nail_services?on_conflict=id',
-        json_body=rows,
-        headers={'Prefer': 'resolution=merge-duplicates'},
-    )
-    return {'ok': True}
-
+    await sb_request('POST','/rest/v1/nail_services?on_conflict=id',json_body=rows,headers={'Prefer':'resolution=merge-duplicates'})
+    return {'ok':True}
 
 @app.put('/api/admin/addons')
 async def update_addons(request: Request):
-    user = await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
+    await require_admin(request.headers.get('X-Telegram-Init-Data',''))
     rows = (await request.json()).get('addons') or []
     for row in rows:
         row['updated_at'] = datetime.now(MOSCOW).isoformat()
-    await sb_request(
-        'POST',
-        '/rest/v1/nail_addons?on_conflict=id',
-        json_body=rows,
-        headers={'Prefer': 'resolution=merge-duplicates'},
-    )
-    return {'ok': True}
-
+    await sb_request('POST','/rest/v1/nail_addons?on_conflict=id',json_body=rows,headers={'Prefer':'resolution=merge-duplicates'})
+    return {'ok':True}
 
 @app.post('/api/admin/availability')
 async def add_availability(request: Request):
-    user = await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
+    await require_admin(request.headers.get('X-Telegram-Init-Data',''))
     body = await request.json()
     slot_date = str(body.get('date') or '')
     slot_time = str(body.get('time') or '')
     minutes = int(body.get('minutes') or 60)
-    starts_at = datetime.strptime(f'{slot_date} {slot_time}', '%Y-%m-%d %H:%M').replace(tzinfo=MOSCOW)
-    ends_at = starts_at + timedelta(minutes=minutes)
-    await sb_request(
-        'POST',
-        '/rest/v1/nail_availability',
-        json_body={'starts_at': starts_at.isoformat(), 'ends_at': ends_at.isoformat(), 'enabled': True},
-        headers={'Prefer': 'return=representation'},
-    )
-    return {'ok': True}
-
+    starts_at = datetime.strptime(f'{slot_date} {slot_time}','%Y-%m-%d %H:%M').replace(tzinfo=MOSCOW)
+    ends_at = starts_at+timedelta(minutes=minutes)
+    await sb_request('POST','/rest/v1/nail_availability',json_body={'starts_at':starts_at.isoformat(),'ends_at':ends_at.isoformat(),'enabled':True},headers={'Prefer':'return=representation'})
+    return {'ok':True}
 
 @app.delete('/api/admin/availability/{slot_id}')
-async def delete_availability(slot_id: str, request: Request):
-    await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
-    await sb_request('DELETE', f'/rest/v1/nail_availability?id=eq.{slot_id}')
-    return {'ok': True}
-
+async def delete_availability(slot_id: str,request: Request):
+    await require_admin(request.headers.get('X-Telegram-Init-Data',''))
+    await sb_request('DELETE',f'/rest/v1/nail_availability?id=eq.{slot_id}')
+    return {'ok':True}
 
 async def check_database():
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -508,80 +305,45 @@ async def check_database():
     if SUPABASE_URL != 'https://woblvdrbcriokqmqehuf.supabase.co':
         return 'SUPABASE_URL не совпадает с проектом записи. Проверьте Environment в Render.'
     try:
-        for table, column in [('nail_admins', 'telegram_id'), ('nail_availability', 'id'), ('nail_bookings', 'id'), ('nail_receipts', 'id')]:
-            params = {'select': column, 'limit': '1'}
+        for table,column in [('nail_admins','telegram_id'),('nail_availability','id'),('nail_bookings','id'),('nail_receipts','id')]:
+            params = {'select':column,'limit':'1'}
             if table == 'nail_admins':
                 params['telegram_id'] = f'eq.{MASTER_ID}'
-            response = await get_http().get(
-                SUPABASE_URL + '/rest/v1/' + table,
-                headers={'apikey': SUPABASE_KEY, 'Cache-Control': 'no-store'},
-                params=params,
-            )
+            response = await get_http().get(SUPABASE_URL+'/rest/v1/'+table,headers={'apikey':SUPABASE_KEY,'Cache-Control':'no-store'},params=params)
             if response.status_code != 200:
                 return f'Нет доступа к {table}: HTTP {response.status_code}. Проверьте серверный секретный ключ и права таблиц.'
             data = response.json()
-            if not isinstance(data, list):
+            if not isinstance(data,list):
                 return 'База вернула неожиданный формат ответа.'
             if table == 'nail_admins' and not any(row.get('telegram_id') == MASTER_ID for row in data):
                 return 'Соединение есть, но ID мастера не найден в nail_admins.'
-    except (httpx.HTTPError, ValueError):
+    except (httpx.HTTPError,ValueError):
         return 'Не удалось связаться с Supabase. Попробуйте позже; секретные значения не выводятся.'
     return '✅ Supabase подключён. Основные таблицы доступны, ID мастера найден.'
 
-
 @app.post('/telegram/webhook')
 async def webhook(request: Request):
-    supplied = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
-    if not SECRET or not secrets.compare_digest(supplied, SECRET):
-        raise HTTPException(status_code=403)
+    supplied = request.headers.get('X-Telegram-Bot-Api-Secret-Token','')
+    if not SECRET or not secrets.compare_digest(supplied,SECRET):
+        raise HTTPException(403)
     update = await request.json()
     message = update.get('message')
-    if message and message.get('chat', {}).get('type') == 'private':
-        parts = message.get('text', '').split(maxsplit=1)
-        command = parts[0].split('@', 1)[0] if parts else ''
+    if message and message.get('chat',{}).get('type') == 'private':
+        parts = message.get('text','').split(maxsplit=1)
+        command = parts[0].split('@',1)[0] if parts else ''
         if command == '/dbcheck':
-            if message.get('from', {}).get('id') not in DIAGNOSTIC_IDS:
-                return {'ok': True}
-            text = await check_database()
-            await send_telegram(message['chat']['id'], text)
-            return {'ok': True}
-        text = 'Привет! Запишись на маникюр к Ярославе (Yasa cat) через удобное мини-приложение ниже 👇'
-        await get_http().post(
-            f'https://api.telegram.org/bot{TOKEN}/sendMessage',
-            json={
-                'chat_id': message['chat']['id'],
-                'text': text,
-                'reply_markup': {
-                    'inline_keyboard': [[
-                        {'text': '💅 Записаться на маникюр', 'web_app': {'url': URL or 'https://google.com'}}
-                    ]]
-                },
-            },
-        )
-    return {'ok': True}
-
+            if message.get('from',{}).get('id') not in DIAGNOSTIC_IDS:
+                return {'ok':True}
+            await send_telegram(message['chat']['id'],await check_database())
+            return {'ok':True}
+        await get_http().post(f'https://api.telegram.org/bot{TOKEN}/sendMessage',json={'chat_id':message['chat']['id'],'text':'Привет! Запишись на маникюр к Ярославе (Yasa cat) через удобное мини-приложение ниже 👇','reply_markup':{'inline_keyboard':[[{'text':'💅 Записаться на маникюр','web_app':{'url':URL or 'https://google.com'}}]]}})
+    return {'ok':True}
 
 @app.post('/admin/setup')
 async def setup(request: Request):
-    supplied = request.headers.get('X-Admin-Secret', '')
-    if not SECRET or not secrets.compare_digest(supplied, SECRET):
-        raise HTTPException(status_code=403)
-    await get_http().post(
-        f'https://api.telegram.org/bot{TOKEN}/setWebhook',
-        json={
-            'url': URL + '/telegram/webhook',
-            'secret_token': SECRET,
-            'allowed_updates': ['message'],
-        },
-    )
-    await get_http().post(
-        f'https://api.telegram.org/bot{TOKEN}/setChatMenuButton',
-        json={
-            'menu_button': {
-                'type': 'web_app',
-                'text': 'Записаться',
-                'web_app': {'url': URL},
-            }
-        },
-    )
-    return {'ok': True}
+    supplied = request.headers.get('X-Admin-Secret','')
+    if not SECRET or not secrets.compare_digest(supplied,SECRET):
+        raise HTTPException(403)
+    await get_http().post(f'https://api.telegram.org/bot{TOKEN}/setWebhook',json={'url':URL+'/telegram/webhook','secret_token':SECRET,'allowed_updates':['message']})
+    await get_http().post(f'https://api.telegram.org/bot{TOKEN}/setChatMenuButton',json={'menu_button':{'type':'web_app','text':'Записаться','web_app':{'url':URL}}})
+    return {'ok':True}
