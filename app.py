@@ -4,6 +4,7 @@ import json
 import uuid
 import hmac
 import hashlib
+import asyncio
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl
 
@@ -34,6 +35,19 @@ RECEIPT_BUCKET = 'nail-private-receipts'
 
 app = FastAPI()
 
+HTTP_CLIENT = None
+
+
+def get_http():
+    global HTTP_CLIENT
+    if HTTP_CLIENT is None:
+        HTTP_CLIENT = httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, connect=5.0),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+        )
+    return HTTP_CLIENT
+
+
 with open('index.html', 'r', encoding='utf-8') as f:
     HTML_PAGE = replace_work_photos(f.read())
 
@@ -61,21 +75,25 @@ async def sb_request(method, path, json_body=None, content=None, headers=None, p
     if headers:
         request_headers.update(headers)
     try:
-        async with httpx.AsyncClient(timeout=25) as client:
-            response = await client.request(
-                method,
-                SUPABASE_URL + path,
-                json=json_body,
-                content=content,
-                headers=request_headers,
-                params=params,
-            )
+        response = await get_http().request(
+            method,
+            SUPABASE_URL + path,
+            json=json_body,
+            content=content,
+            headers=request_headers,
+            params=params,
+        )
     except httpx.HTTPError:
         raise HTTPException(status_code=503, detail='Не удалось связаться с базой данных.')
     if response.status_code >= 400:
         if response.status_code == 409:
             raise HTTPException(status_code=409, detail='Это время уже занято. Выбери другое.')
-        raise HTTPException(status_code=502, detail='Ошибка сохранения в базе данных.')
+        try:
+            error_data = response.json()
+            message = error_data.get('message') or error_data.get('error') or 'Ошибка базы данных.'
+        except ValueError:
+            message = 'Ошибка базы данных.'
+        raise HTTPException(status_code=502, detail=message)
     return response
 
 
@@ -111,6 +129,37 @@ async def require_admin(raw_init_data):
     return user
 
 
+async def send_telegram(chat_id, text):
+    if not TOKEN or not chat_id:
+        return
+    try:
+        await get_http().post(
+            f'https://api.telegram.org/bot{TOKEN}/sendMessage',
+            json={'chat_id': chat_id, 'text': text},
+        )
+    except httpx.HTTPError:
+        pass
+
+
+async def notify_new_booking(booking):
+    master_text = (
+        'Новая заявка\n\n'
+        f"Имя: {booking.get('client_name')}\n"
+        f"Услуга: {booking.get('service_name')}\n"
+        f"Время: {booking.get('starts_at')}\n"
+        f"Сумма: {booking.get('total_rub')} ₽\n"
+        f"Предоплата: {booking.get('deposit_rub')} ₽\n"
+        f"Telegram: @{booking.get('telegram_username') or '—'}\n"
+        f"Комментарий: {booking.get('client_comment') or '—'}"
+    )
+    await send_telegram(MASTER_ID, master_text)
+    client_text = (
+        'Запись создана. Пришли чек на предоплату '
+        f"{booking.get('deposit_rub')} ₽."
+    )
+    await send_telegram(booking.get('telegram_id'), client_text)
+
+
 @app.get('/')
 def home():
     enhanced = HTML_PAGE.replace('</body>', '<script src="/static/client-enhance.js"></script></body>')
@@ -134,13 +183,16 @@ def health():
 
 @app.get('/api/config')
 async def api_config():
-    services = (await sb_request('GET', '/rest/v1/nail_services?active=eq.true&order=sort_order.asc')).json()
-    addons = (await sb_request('GET', '/rest/v1/nail_addons?active=eq.true&order=sort_order.asc')).json()
-    settings_rows = (await sb_request('GET', '/rest/v1/nail_settings?id=eq.1')).json()
+    services_response, addons_response, settings_response = await asyncio.gather(
+        sb_request('GET', '/rest/v1/nail_services?active=eq.true&order=sort_order.asc'),
+        sb_request('GET', '/rest/v1/nail_addons?active=eq.true&order=sort_order.asc'),
+        sb_request('GET', '/rest/v1/nail_settings?id=eq.1'),
+    )
+    settings_rows = settings_response.json()
     settings = settings_rows[0] if settings_rows else {}
     return {
-        'services': services,
-        'addons': addons,
+        'services': services_response.json(),
+        'addons': addons_response.json(),
         'settings': {
             'deposit_rub': settings.get('deposit_rub', 500),
             'payment_phone': settings.get('payment_phone', ''),
@@ -173,21 +225,6 @@ async def create_booking(request: Request):
 
     if not service_id or not booking_date or not booking_time or not client_name:
         raise HTTPException(status_code=400, detail='Заполни имя, услугу и время.')
-
-    settings_rows = (await sb_request('GET', '/rest/v1/nail_settings?id=eq.1')).json()
-    if not settings_rows or not settings_rows[0].get('booking_enabled'):
-        raise HTTPException(status_code=403, detail='Запись временно закрыта.')
-
-    services = (await sb_request('GET', f"/rest/v1/nail_services?id=eq.{service_id}&select=*")).json()
-    if not services:
-        raise HTTPException(status_code=400, detail='Услуга недоступна.')
-    service = services[0]
-
-    addons = []
-    if addon_ids:
-        ids = ','.join(str(item) for item in addon_ids[:20])
-        addons = (await sb_request('GET', f'/rest/v1/nail_addons?id=in.({ids})&select=*')).json()
-
     if booking_time not in ALLOWED_TIMES:
         raise HTTPException(status_code=400, detail='Выбери время из списка.')
     try:
@@ -197,38 +234,23 @@ async def create_booking(request: Request):
     if starts_at < datetime.now(MOSCOW):
         raise HTTPException(status_code=400, detail='Нельзя записаться на прошедшее время.')
 
-    duration_minutes = service['minutes'] + sum(addon.get('minutes', 0) for addon in addons)
-    ends_at = starts_at + timedelta(minutes=duration_minutes)
-    total_rub = service['price'] + sum(addon.get('price', 0) for addon in addons)
-    deposit_rub = settings_rows[0].get('deposit_rub', 500)
-
-    payload = {
-        'telegram_id': user['id'],
-        'client_name': client_name,
-        'telegram_username': telegram_username,
-        'service_id': service['id'],
-        'service_name': service['name'],
-        'addons': [{'id': addon['id'], 'name': addon['name'], 'price': addon['price']} for addon in addons],
-        'starts_at': starts_at.isoformat(),
-        'ends_at': ends_at.isoformat(),
-        'total_rub': total_rub,
-        'deposit_rub': deposit_rub,
-        'status': 'awaiting_receipt',
-        'hold_expires_at': (datetime.now(MOSCOW) + timedelta(minutes=30)).isoformat(),
-        'payment_status': 'unverified',
-        'client_comment': client_comment,
-        'payment_details_snapshot': {
-            'payment_phone': settings_rows[0].get('payment_phone', ''),
-            'payment_bank': settings_rows[0].get('payment_bank', ''),
-        },
-    }
     response = await sb_request(
         'POST',
-        '/rest/v1/nail_bookings?select=*',
-        json_body=payload,
+        '/rest/v1/rpc/create_nail_booking',
+        json_body={
+            'p_telegram_id': user['id'],
+            'p_service_id': service_id,
+            'p_addon_ids': addon_ids,
+            'p_starts_at': starts_at.isoformat(),
+            'p_client_name': client_name,
+            'p_telegram_username': telegram_username,
+            'p_client_comment': client_comment,
+        },
         headers={'Prefer': 'return=representation'},
     )
-    return response.json()[0]
+    booking = response.json()
+    asyncio.create_task(notify_new_booking(booking))
+    return booking
 
 
 @app.post('/api/bookings/{booking_id}/receipt')
@@ -285,6 +307,14 @@ async def upload_receipt(
             'updated_at': datetime.now(MOSCOW).isoformat(),
         },
     )
+    master_text = (
+        'Новый чек на проверку\n\n'
+        f"Клиент: {booking.get('client_name')}\n"
+        f"Услуга: {booking.get('service_name')}\n"
+        f"Время: {booking.get('starts_at')}\n"
+        f"Предоплата: {booking.get('deposit_rub')} ₽"
+    )
+    asyncio.create_task(send_telegram(MASTER_ID, master_text))
     return {'ok': True}
 
 
@@ -381,15 +411,18 @@ async def admin_booking_action(booking_id: str, request: Request):
 @app.get('/api/admin/config')
 async def admin_config(request: Request):
     await require_admin(request.headers.get('X-Telegram-Init-Data', ''))
-    services = (await sb_request('GET', '/rest/v1/nail_services?order=sort_order.asc')).json()
-    addons = (await sb_request('GET', '/rest/v1/nail_addons?order=sort_order.asc')).json()
-    settings_rows = (await sb_request('GET', '/rest/v1/nail_settings?id=eq.1')).json()
-    availability = (await sb_request('GET', '/rest/v1/nail_availability?enabled=eq.true&order=starts_at.asc&limit=200')).json()
+    services_response, addons_response, settings_response, availability_response = await asyncio.gather(
+        sb_request('GET', '/rest/v1/nail_services?order=sort_order.asc'),
+        sb_request('GET', '/rest/v1/nail_addons?order=sort_order.asc'),
+        sb_request('GET', '/rest/v1/nail_settings?id=eq.1'),
+        sb_request('GET', '/rest/v1/nail_availability?enabled=eq.true&order=starts_at.asc&limit=200'),
+    )
+    settings_rows = settings_response.json()
     return {
-        'services': services,
-        'addons': addons,
+        'services': services_response.json(),
+        'addons': addons_response.json(),
         'settings': settings_rows[0] if settings_rows else {},
-        'availability': availability,
+        'availability': availability_response.json(),
     }
 
 
@@ -475,23 +508,22 @@ async def check_database():
     if SUPABASE_URL != 'https://woblvdrbcriokqmqehuf.supabase.co':
         return 'SUPABASE_URL не совпадает с проектом записи. Проверьте Environment в Render.'
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
-            for table, column in [('nail_admins', 'telegram_id'), ('nail_availability', 'id'), ('nail_bookings', 'id'), ('nail_receipts', 'id')]:
-                params = {'select': column, 'limit': '1'}
-                if table == 'nail_admins':
-                    params['telegram_id'] = f'eq.{MASTER_ID}'
-                response = await client.get(
-                    SUPABASE_URL + '/rest/v1/' + table,
-                    headers={'apikey': SUPABASE_KEY, 'Cache-Control': 'no-store'},
-                    params=params,
-                )
-                if response.status_code != 200:
-                    return f'Нет доступа к {table}: HTTP {response.status_code}. Проверьте серверный секретный ключ и права таблиц.'
-                data = response.json()
-                if not isinstance(data, list):
-                    return 'База вернула неожиданный формат ответа.'
-                if table == 'nail_admins' and not any(row.get('telegram_id') == MASTER_ID for row in data):
-                    return 'Соединение есть, но ID мастера не найден в nail_admins.'
+        for table, column in [('nail_admins', 'telegram_id'), ('nail_availability', 'id'), ('nail_bookings', 'id'), ('nail_receipts', 'id')]:
+            params = {'select': column, 'limit': '1'}
+            if table == 'nail_admins':
+                params['telegram_id'] = f'eq.{MASTER_ID}'
+            response = await get_http().get(
+                SUPABASE_URL + '/rest/v1/' + table,
+                headers={'apikey': SUPABASE_KEY, 'Cache-Control': 'no-store'},
+                params=params,
+            )
+            if response.status_code != 200:
+                return f'Нет доступа к {table}: HTTP {response.status_code}. Проверьте серверный секретный ключ и права таблиц.'
+            data = response.json()
+            if not isinstance(data, list):
+                return 'База вернула неожиданный формат ответа.'
+            if table == 'nail_admins' and not any(row.get('telegram_id') == MASTER_ID for row in data):
+                return 'Соединение есть, но ID мастера не найден в nail_admins.'
     except (httpx.HTTPError, ValueError):
         return 'Не удалось связаться с Supabase. Попробуйте позже; секретные значения не выводятся.'
     return '✅ Supabase подключён. Основные таблицы доступны, ID мастера найден.'
@@ -511,29 +543,21 @@ async def webhook(request: Request):
             if message.get('from', {}).get('id') not in DIAGNOSTIC_IDS:
                 return {'ok': True}
             text = await check_database()
-            async with httpx.AsyncClient(timeout=8) as client:
-                response = await client.post(
-                    f'https://api.telegram.org/bot{TOKEN}/sendMessage',
-                    json={'chat_id': message['chat']['id'], 'text': text},
-                )
-                response.raise_for_status()
-                if not response.json().get('ok'):
-                    raise HTTPException(status_code=502, detail='Telegram delivery failed')
+            await send_telegram(message['chat']['id'], text)
             return {'ok': True}
         text = 'Привет! Запишись на маникюр к Ярославе (Yasa cat) через удобное мини-приложение ниже 👇'
-        async with httpx.AsyncClient(timeout=8) as client:
-            await client.post(
-                f'https://api.telegram.org/bot{TOKEN}/sendMessage',
-                json={
-                    'chat_id': message['chat']['id'],
-                    'text': text,
-                    'reply_markup': {
-                        'inline_keyboard': [[
-                            {'text': '💅 Записаться на маникюр', 'web_app': {'url': URL or 'https://google.com'}}
-                        ]]
-                    },
+        await get_http().post(
+            f'https://api.telegram.org/bot{TOKEN}/sendMessage',
+            json={
+                'chat_id': message['chat']['id'],
+                'text': text,
+                'reply_markup': {
+                    'inline_keyboard': [[
+                        {'text': '💅 Записаться на маникюр', 'web_app': {'url': URL or 'https://google.com'}}
+                    ]]
                 },
-            )
+            },
+        )
     return {'ok': True}
 
 
@@ -542,23 +566,22 @@ async def setup(request: Request):
     supplied = request.headers.get('X-Admin-Secret', '')
     if not SECRET or not secrets.compare_digest(supplied, SECRET):
         raise HTTPException(status_code=403)
-    async with httpx.AsyncClient(timeout=8) as client:
-        await client.post(
-            f'https://api.telegram.org/bot{TOKEN}/setWebhook',
-            json={
-                'url': URL + '/telegram/webhook',
-                'secret_token': SECRET,
-                'allowed_updates': ['message'],
-            },
-        )
-        await client.post(
-            f'https://api.telegram.org/bot{TOKEN}/setChatMenuButton',
-            json={
-                'menu_button': {
-                    'type': 'web_app',
-                    'text': 'Записаться',
-                    'web_app': {'url': URL},
-                }
-            },
-        )
+    await get_http().post(
+        f'https://api.telegram.org/bot{TOKEN}/setWebhook',
+        json={
+            'url': URL + '/telegram/webhook',
+            'secret_token': SECRET,
+            'allowed_updates': ['message'],
+        },
+    )
+    await get_http().post(
+        f'https://api.telegram.org/bot{TOKEN}/setChatMenuButton',
+        json={
+            'menu_button': {
+                'type': 'web_app',
+                'text': 'Записаться',
+                'web_app': {'url': URL},
+            }
+        },
+    )
     return {'ok': True}
