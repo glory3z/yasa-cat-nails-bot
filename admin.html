@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yasa cat · кабинет</title>
+<style>
+body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:#faf8f5;color:#302b29}
+main{max-width:540px;margin:auto;padding:20px}
+h1{font-size:24px;margin:0 0 16px}
+h2{font-size:18px;margin:20px 0 10px}
+.tabs{display:flex;gap:6px;margin-bottom:16px}
+.tabs button{flex:1;border:1px solid #e9e2dc;background:#fff;border-radius:10px;padding:10px 4px;font-size:12px}
+.tabs button.active{background:#302b29;color:#fff;border-color:#302b29}
+.card{background:#fff;border:1px solid #e9e2dc;border-radius:14px;padding:14px;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;gap:10px;font-size:13px;margin:6px 0}
+.label{display:block;font-size:12px;color:#837b76;margin:10px 0 4px}
+input,textarea{width:100%;border:1px solid #e9e2dc;border-radius:10px;padding:10px;font:inherit;background:#fff;box-sizing:border-box}
+button.primary{width:100%;border:0;border-radius:12px;background:#302b29;color:#fff;padding:14px;font-weight:600;margin-top:12px}
+button.small{border:1px solid #e9e2dc;background:#f3eeea;border-radius:10px;padding:8px 10px;font-size:12px}
+.error{color:#a24c46;font-size:12px;margin-top:8px}
+.muted{color:#837b76;font-size:12px}
+</style>
+</head>
+<body>
+<main>
+<h1>Кабинет мастера</h1>
+<div class="tabs">
+<button data-tab="bookings" class="active">Заявки</button>
+<button data-tab="price">Прайс</button>
+<button data-tab="schedule">Расписание</button>
+<button data-tab="settings">Настройки</button>
+</div>
+<div id="content"></div>
+<p id="error" class="error"></p>
+</main>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+'use strict';
+const tg = window.Telegram?.WebApp;
+tg?.ready();
+tg?.expand();
+const initData = tg?.initData || '';
+let adminConfig = null;
+let bookings = [];
+let receipts = {};
+let currentTab = 'bookings';
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      'X-Telegram-Init-Data': initData,
+    },
+  });
+  if (!response.ok) {
+    let message = 'Ошибка';
+    try {
+      const data = await response.json();
+      message = data.detail || message;
+    } catch (error) {}
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+function money(value) {
+  return Number(value || 0).toLocaleString('ru-RU') + ' ₽';
+}
+
+function escapeText(value) {
+  return String(value ?? '').replace(/[&<>"']/g, function (char) {
+    return {'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[char];
+  });
+}
+
+function showError(message) {
+  document.getElementById('error').textContent = message;
+}
+
+async function loadAll() {
+  try {
+    adminConfig = await api('/api/admin/config');
+    const data = await api('/api/admin/bookings');
+    bookings = data.bookings || [];
+    receipts = data.receipts || {};
+    renderTab(currentTab);
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+document.querySelectorAll('.tabs button').forEach(function (button) {
+  button.onclick = function () {
+    currentTab = button.dataset.tab;
+    document.querySelectorAll('.tabs button').forEach(function (item) {
+      item.classList.toggle('active', item === button);
+    });
+    renderTab(currentTab);
+  };
+});
+
+function renderTab(tab) {
+  const container = document.getElementById('content');
+  if (tab === 'bookings') renderBookings(container);
+  if (tab === 'price') renderPrice(container);
+  if (tab === 'schedule') renderSchedule(container);
+  if (tab === 'settings') renderSettings(container);
+}
+
+function renderBookings(container) {
+  if (!bookings.length) {
+    container.innerHTML = '<div class="card">Пока нет заявок.</div>';
+    return;
+  }
+  container.innerHTML = bookings.map(function (booking) {
+    const receipt = (receipts[booking.id] || [])[0];
+    const actions = [];
+    if (booking.status === 'pending_review') {
+      actions.push(['confirm_payment', 'Оплата получена']);
+      actions.push(['payment_not_found', 'Оплата не найдена']);
+    }
+    if (booking.status === 'awaiting_receipt') actions.push(['decline', 'Отклонить']);
+    if (booking.status === 'confirmed') {
+      actions.push(['request_reschedule', 'Запросить перенос']);
+      actions.push(['cancel', 'Отменить']);
+    }
+    if (booking.status === 'reschedule_requested') {
+      actions.push(['confirm_reschedule', 'Подтвердить перенос']);
+      actions.push(['decline', 'Отклонить']);
+    }
+    return `
+      <div class="card">
+        <div class="row"><b>${escapeText(booking.client_name)}</b><span>${escapeText(booking.telegram_username || '')}</span></div>
+        <div class="row"><span>Услуга</span><span>${escapeText(booking.service_name)}</span></div>
+        <div class="row"><span>Когда</span><span>${new Date(booking.starts_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span></div>
+        <div class="row"><span>Сумма</span><span>${money(booking.total_rub)} · предоплата ${money(booking.deposit_rub)}</span></div>
+        <div class="row"><span>Статус</span><span>${escapeText(booking.status)}</span></div>
+        ${booking.client_comment ? `<div class="row"><span>Комментарий</span><span>${escapeText(booking.client_comment)}</span></div>` : ''}
+        ${receipt ? `<button class="small" data-receipt="${receipt.id}">Открыть чек</button>` : '<div class="muted">Чек не загружен</div>'}
+        <div style="display:flex;gap:8px;margin-top:10px">
+          ${actions.map(function (item) { return `<button class="small" data-action="${item[0]}" data-id="${booking.id}">${item[1]}</button>`; }).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('[data-receipt]').forEach(function (button) {
+    button.onclick = async function () {
+      try {
+        const data = await api('/api/admin/receipt/' + button.dataset.receipt);
+        window.open(data.url, '_blank');
+      } catch (error) {
+        showError(error.message);
+      }
+    };
+  });
+
+  container.querySelectorAll('[data-action]').forEach(function (button) {
+    button.onclick = async function () {
+      try {
+        await api('/api/admin/bookings/' + button.dataset.id + '/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: button.dataset.action }),
+        });
+        await loadAll();
+      } catch (error) {
+        showError(error.message);
+      }
+    };
+  });
+}
+
+function renderPrice(container) {
+  const services = adminConfig.services.map(function (service) {
+    return `
+      <div class="card" data-service="${service.id}">
+        <label class="label">Название</label><input data-field="name" value="${escapeText(service.name)}">
+        <label class="label">Описание</label><input data-field="description" value="${escapeText(service.description)}">
+        <div style="display:flex;gap:8px">
+          <div style="flex:1"><label class="label">Минут</label><input data-field="minutes" type="number" value="${service.minutes}"></div>
+          <div style="flex:1"><label class="label">Цена</label><input data-field="price" type="number" value="${service.price}"></div>
+        </div>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:13px"><input type="checkbox" data-field="active" ${service.active ? 'checked' : ''}> Активна</label>
+      </div>
+    `;
+  }).join('');
+
+  const addons = adminConfig.addons.map(function (addon) {
+    return `
+      <div class="card" data-addon="${addon.id}">
+        <label class="label">Название</label><input data-field="name" value="${escapeText(addon.name)}">
+        <div style="display:flex;gap:8px">
+          <div style="flex:1"><label class="label">Минут</label><input data-field="minutes" type="number" value="${addon.minutes}"></div>
+          <div style="flex:1"><label class="label">Цена</label><input data-field="price" type="number" value="${addon.price}"></div>
+        </div>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:13px"><input type="checkbox" data-field="active" ${addon.active ? 'checked' : ''}> Активно</label>
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <h2>Услуги</h2>${services}
+    <button class="primary" id="save-services">Сохранить услуги</button>
+    <h2>Дополнения</h2>${addons}
+    <button class="primary" id="save-addons">Сохранить дополнения</button>
+  `;
+
+  document.getElementById('save-services').onclick = async function () {
+    const rows = [...container.querySelectorAll('[data-service]')].map(function (card) {
+      return {
+        id: card.dataset.service,
+        name: card.querySelector('[data-field="name"]').value,
+        description: card.querySelector('[data-field="description"]').value,
+        minutes: Number(card.querySelector('[data-field="minutes"]').value),
+        price: Number(card.querySelector('[data-field="price"]').value),
+        active: card.querySelector('[data-field="active"]').checked,
+      };
+    });
+    await api('/api/admin/services', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ services: rows }),
+    });
+    await loadAll();
+  };
+
+  document.getElementById('save-addons').onclick = async function () {
+    const rows = [...container.querySelectorAll('[data-addon]')].map(function (card) {
+      return {
+        id: card.dataset.addon,
+        name: card.querySelector('[data-field="name"]').value,
+        minutes: Number(card.querySelector('[data-field="minutes"]').value),
+        price: Number(card.querySelector('[data-field="price"]').value),
+        active: card.querySelector('[data-field="active"]').checked,
+      };
+    });
+    await api('/api/admin/addons', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ addons: rows }),
+    });
+    await loadAll();
+  };
+}
+
+function renderSchedule(container) {
+  container.innerHTML = `
+    <div class="card">
+      <label class="label">Дата</label><input id="slot-date" type="date">
+      <label class="label">Время</label><input id="slot-time" type="time" value="11:00">
+      <label class="label">Длительность, минут</label><input id="slot-minutes" type="number" value="120">
+      <button class="primary" id="add-slot">Добавить окно</button>
+    </div>
+    <div id="slots"></div>
+  `;
+  renderSlots();
+  document.getElementById('add-slot').onclick = async function () {
+    try {
+      await api('/api/admin/availability', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: document.getElementById('slot-date').value,
+          time: document.getElementById('slot-time').value,
+          minutes: Number(document.getElementById('slot-minutes').value),
+        }),
+      });
+      await loadAll();
+    } catch (error) {
+      showError(error.message);
+    }
+  };
+}
+
+function renderSlots() {
+  const slots = adminConfig.availability || [];
+  const container = document.getElementById('slots');
+  container.innerHTML = slots.length ? slots.map(function (slot) {
+    return `
+      <div class="card">
+        <div class="row">
+          <span>${new Date(slot.starts_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} — ${new Date(slot.ends_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
+        </div>
+        <button class="small" data-delete="${slot.id}">Удалить</button>
+      </div>
+    `;
+  }).join('') : '<div class="card muted">Свободных окон пока нет.</div>';
+
+  container.querySelectorAll('[data-delete]').forEach(function (button) {
+    button.onclick = async function () {
+      try {
+        await api('/api/admin/availability/' + button.dataset.delete, { method: 'DELETE' });
+        await loadAll();
+      } catch (error) {
+        showError(error.message);
+      }
+    };
+  });
+}
+
+function renderSettings(container) {
+  const settings = adminConfig.settings || {};
+  container.innerHTML = `
+    <div class="card">
+      <label class="label">Предоплата, ₽</label><input id="set-deposit" type="number" value="${settings.deposit_rub ?? 500}">
+      <label class="label">Телефон для перевода</label><input id="set-phone" value="${escapeText(settings.payment_phone || '')}">
+      <label class="label">Банк</label><input id="set-bank" value="${escapeText(settings.payment_bank || '')}">
+      <label class="label">Условия отмены</label><textarea id="set-cancel" rows="3">${escapeText(settings.cancellation_terms || '')}</textarea>
+      <label class="label">Условия переноса</label><textarea id="set-reschedule" rows="3">${escapeText(settings.reschedule_terms || '')}</textarea>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px"><input id="set-enabled" type="checkbox" ${settings.booking_enabled ? 'checked' : ''}> Приём заявок включён</label>
+      <button class="primary" id="save-settings">Сохранить настройки</button>
+    </div>
+  `;
+
+  document.getElementById('save-settings').onclick = async function () {
+    try {
+      await api('/api/admin/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deposit_rub: Number(document.getElementById('set-deposit').value),
+          payment_phone: document.getElementById('set-phone').value,
+          payment_bank: document.getElementById('set-bank').value,
+          cancellation_terms: document.getElementById('set-cancel').value,
+          reschedule_terms: document.getElementById('set-reschedule').value,
+          booking_enabled: document.getElementById('set-enabled').checked,
+        }),
+      });
+      await loadAll();
+    } catch (error) {
+      showError(error.message);
+    }
+  };
+}
+
+loadAll();
+</script>
+</body>
+</html>
