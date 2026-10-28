@@ -245,20 +245,18 @@
     if (trigger) setTimeout(renderMyBookings, 50);
   }, true);
 
-  async function addAdminButton() {
-    try {
-      const me = await api('/api/me');
-      if (!me.is_admin) return;
-      const homeScreen = document.getElementById('home');
-      const button = document.createElement('button');
-      button.className = 'secondary';
-      button.style.marginTop = '10px';
-      button.textContent = 'Кабинет мастера';
-      button.onclick = function () {
-        window.location.href = '/admin';
-      };
-      homeScreen.appendChild(button);
-    } catch (error) {}
+  function addAdminButton() {
+    const homeScreen = document.getElementById('home');
+    if (!homeScreen || document.getElementById('admin-open')) return;
+    const button = document.createElement('button');
+    button.id = 'admin-open';
+    button.className = 'secondary';
+    button.style.marginTop = '10px';
+    button.textContent = 'Кабинет мастера';
+    button.onclick = function () {
+      window.location.href = '/admin';
+    };
+    homeScreen.appendChild(button);
   }
 
   (async function init() {
