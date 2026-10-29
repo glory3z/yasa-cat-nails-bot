@@ -25,8 +25,11 @@ class BookingMessages:
             response = await self.http().post(f'https://api.telegram.org/bot{self.token}/{method}',json=data)
         result = response.json()
         if not response.is_success or not result.get('ok'):
-            log.error('Telegram %s rejected request: HTTP %s',method,response.status_code)
-            raise RuntimeError('Не удалось доставить сообщение в Telegram.')
+            description = str(result.get('description','')).replace(self.token,'[redacted]')[:300]
+            if method in {'editMessageText','editMessageReplyMarkup'} and 'message is not modified' in description.lower():
+                return None
+            log.error('Telegram %s failed: HTTP %s, %s',method,response.status_code,description)
+            raise RuntimeError('Не удалось выполнить запрос Telegram: '+method)
         return result.get('result')
 
     def card(self, b, title='Информация о записи', client=False, details=False):
@@ -129,15 +132,23 @@ class BookingMessages:
     async def edit_card(self, actor, message_id, text, markup):
         try:
             await self.telegram('editMessageText',{'chat_id':actor,'message_id':message_id,'text':text,'reply_markup':markup})
-        except RuntimeError:
+        except Exception:
+            log.warning('Unable to edit card; sending a fresh card')
             await self.telegram('sendMessage',{'chat_id':actor,'text':text,'reply_markup':markup})
+
+    async def acknowledge(self, qid):
+        try:
+            await asyncio.wait_for(self.telegram('answerCallbackQuery',{'callback_query_id':qid}),timeout=2.0)
+        except Exception:
+            log.warning('Callback acknowledgement failed; continuing processing')
 
     async def callback(self, q):
         qid=q.get('id')
         actor=q.get('from',{}).get('id')
         message=q.get('message') or {}
         chat=message.get('chat') or {}
-        answered=False
+        code='unknown'
+        await self.acknowledge(qid)
         try:
             if chat.get('type')!='private' or chat.get('id')!=actor:
                 raise HTTPException(403,'Открой карточку в личном чате с ботом.')
@@ -145,22 +156,28 @@ class BookingMessages:
             if len(parts)!=3 or parts[0]!='bk':
                 raise HTTPException(400,'Неизвестная кнопка.')
             _,code,booking_id=parts
+            log.info('Booking callback received: %s',code)
             if code in {'cdetails','cback'}:
                 b=await self.booking(booking_id)
                 if b['telegram_id']!=actor:
                     raise HTTPException(403,'Это не твоя запись.')
-                await self.telegram('answerCallbackQuery',{'callback_query_id':qid})
-                answered=True
                 detailed=code=='cdetails'
-                await self.edit_card(actor,message['message_id'],self.card(b,'Твоя запись',client=True,details=detailed),self.client_keyboard(b,detailed))
+                text=self.card(b,'Твоя запись',client=True,details=detailed)
+                markup=self.client_keyboard(b,detailed)
+                if detailed:
+                    await self.telegram('sendMessage',{'chat_id':actor,'text':text,'reply_markup':markup})
+                else:
+                    await self.edit_card(actor,message['message_id'],text,markup)
                 return
             if not await self.is_admin(actor):
                 raise HTTPException(403,'Доступно только мастеру.')
             if code not in {'receipt','refresh','details','cancel_yes','decline_yes'} and code not in ACTIONS:
                 raise HTTPException(400,'Неизвестное действие.')
             b=await self.booking(booking_id)
-            await self.telegram('answerCallbackQuery',{'callback_query_id':qid})
-            answered=True
+            if code=='details':
+                markup={'inline_keyboard':[[{'text':'← Кратко','callback_data':f"bk:refresh:{b['id']}"}],[{'text':'💬 Связаться с клиентом','url':f"tg://user?id={int(b['telegram_id'])}"}]]}
+                await self.telegram('sendMessage',{'chat_id':actor,'text':self.card(b,details=True),'reply_markup':markup})
+                return
             if code in {'cancel','decline'}:
                 rule=ACTIONS[code]
                 if b['status'] not in rule[2]:
@@ -175,11 +192,9 @@ class BookingMessages:
                 r=rows[0]
                 response=await self.sb('GET',f"/storage/v1/object/authenticated/{self.bucket}/{r['object_path']}")
                 await self.telegram('sendDocument',data={'chat_id':str(actor),'caption':'🧾 Чек для проверки'},files={'document':(r['original_filename'],response.content,r['mime_type'])})
-                markup=self.keyboard(b,True)
-                await self.telegram('sendMessage',{'chat_id':actor,'text':self.card(b,'Проверка оплаты'),'reply_markup':markup})
+                await self.telegram('sendMessage',{'chat_id':actor,'text':self.card(b,'Проверка оплаты'),'reply_markup':self.keyboard(b,True)})
                 return
-            detailed=code=='details'
-            if code not in {'refresh','details'}:
+            if code!='refresh':
                 code=code.removesuffix('_yes')
                 b=await self.perform(actor,b['id'],ACTIONS[code][0])
                 try:
@@ -187,13 +202,12 @@ class BookingMessages:
                 except Exception:
                     log.error('Client status notification failed')
             rows=await self.receipts(b['id'])
-            await self.edit_card(actor,message['message_id'],self.card(b,details=detailed),self.keyboard(b,bool(rows),detailed))
+            await self.edit_card(actor,message['message_id'],self.card(b),self.keyboard(b,bool(rows)))
         except Exception as error:
-            text=error.detail if isinstance(error,HTTPException) else 'Не удалось выполнить действие. Проверь актуальный статус в кабинете.'
-            try:
-                if not answered:
-                    await self.telegram('answerCallbackQuery',{'callback_query_id':qid,'text':text,'show_alert':True})
-                elif chat.get('type')=='private' and chat.get('id')==actor:
+            log.error('Booking callback failed: action=%s, type=%s',code,type(error).__name__)
+            text=error.detail if isinstance(error,HTTPException) else 'Не удалось открыть данные или выполнить действие. Повтори нажатие; если ошибка повторится, открой кабинет мастера.'
+            if chat.get('type')=='private' and chat.get('id')==actor:
+                try:
                     await self.telegram('sendMessage',{'chat_id':actor,'text':text})
-            except Exception:
-                log.error('Unable to deliver callback error')
+                except Exception:
+                    log.error('Unable to deliver callback error')
