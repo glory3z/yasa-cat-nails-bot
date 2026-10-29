@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import re
+from urllib.parse import quote
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
@@ -73,6 +74,12 @@ def install(app, sb_request, verify_init_data, moscow, allowed_times):
             tag = tag[:-1] + ' decoding="async">'
         return tag
     page = re.sub(r'<img\b[^>]*>', image_options, page)
+    creator_url = 'https://t.me/delaupokaifu?text=' + quote('Привет! Хочу такого же бота для своего бизнеса. Расскажи про стоимость и запуск.', safe='')
+    creator_button = ('<div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--line)">'
+        '<a id="creator-contact" class="secondary" style="display:block;text-align:center;text-decoration:none" href="' + creator_url + '" '
+        'onclick="if(window.Telegram &amp;&amp; window.Telegram.WebApp &amp;&amp; window.Telegram.WebApp.openTelegramLink){event.preventDefault();window.Telegram.WebApp.openTelegramLink(this.href)}">'
+        'Хочу такого же бота</a></div>')
+    page = page.replace('</section>', creator_button + '</section>', 1)
     page = page.replace('</body>', '<script src="/static/client-enhance.js"></script></body>')
     legacy=[]
     for digest in photo_assets:
