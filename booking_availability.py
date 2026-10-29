@@ -1,14 +1,13 @@
-import asyncio
 import base64
 import hashlib
 import re
-from datetime import datetime, timedelta
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 from work_photos import replace_work_photos
+from master_tools import install as install_master_tools
 
-CLIENT_SCRIPT = r'''
+CLIENT_SCRIPT = r"""
 (function(){
 'use strict';
 let sequence=0;
@@ -43,8 +42,12 @@ renderTimes=async function(){
 hint.addEventListener('click',()=>{if(!document.getElementById('datetime').hidden)renderTimes();});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!document.getElementById('datetime').hidden)renderTimes();});
 if(!document.getElementById('datetime').hidden)renderTimes();
+async function reloadPhotos(){
+ try{const response=await fetch('/api/work-photos',{cache:'no-store'});if(!response.ok)return;const data=await response.json(),grid=document.querySelector('.works-grid');if(!grid||!Array.isArray(data.photos))return;const fragment=document.createDocumentFragment();for(const photo of data.photos){const card=document.createElement('div'),image=document.createElement('img');card.className='work-card';image.src=photo.url;image.alt=photo.caption||'Работа мастера';image.loading='lazy';image.decoding='async';card.appendChild(image);if(photo.caption){const info=document.createElement('div');info.className='work-info';info.textContent=photo.caption;card.appendChild(info)}fragment.appendChild(card)}grid.replaceChildren(fragment)}catch(error){console.warn('Не удалось обновить примеры работ')}
+}
+reloadPhotos();document.addEventListener('visibilitychange',()=>{if(!document.hidden)reloadPhotos()});
 })();
-'''
+"""
 
 def install(app, sb_request, verify_init_data, moscow, allowed_times):
     photo_assets = {}
@@ -71,6 +74,13 @@ def install(app, sb_request, verify_init_data, moscow, allowed_times):
         return tag
     page = re.sub(r'<img\b[^>]*>', image_options, page)
     page = page.replace('</body>', '<script src="/static/client-enhance.js"></script></body>')
+    legacy=[]
+    for digest in photo_assets:
+        source='/static/work-photo/'+digest
+        match=re.search(r'<div class="work-card">\s*<img[^>]*src="'+re.escape(source)+r'"[^>]*>\s*<div class="work-info">(.*?)</div>',page,re.S)
+        caption=re.sub(r'<[^>]+>',' ',match.group(1)).strip() if match else ''
+        legacy.append({'id':'legacy-'+digest,'url':source,'caption':re.sub(r'\s+',' ',caption)})
+    install_master_tools(app,sb_request,verify_init_data,moscow,allowed_times,legacy)
 
     @app.get('/static/work-photo/{digest}')
     async def work_photo(digest: str):
@@ -87,93 +97,3 @@ def install(app, sb_request, verify_init_data, moscow, allowed_times):
         return await call_next(request)
 
     app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=4)
-
-    @app.post('/api/booking-times')
-    async def booking_times(request: Request):
-        verify_init_data(request.headers.get('X-Telegram-Init-Data', ''))
-        body = await request.json()
-        try:
-            day = datetime.strptime(str(body.get('date', '')), '%Y-%m-%d').replace(tzinfo=moscow)
-        except ValueError:
-            raise HTTPException(400, 'Некорректная дата.')
-        addon_ids = body.get('addon_ids', [])
-        if not isinstance(addon_ids, list) or len(addon_ids) > 20 or any(not isinstance(x, str) for x in addon_ids):
-            raise HTTPException(400, 'Некорректные дополнения.')
-        service_id = body.get('service_id')
-        if not isinstance(service_id, str):
-            raise HTTPException(400, 'Выбери услугу.')
-        service_response, addon_response, settings_response = await asyncio.gather(
-            sb_request('GET', '/rest/v1/nail_services', params={'id':'eq.'+service_id,'active':'eq.true','select':'id,minutes'}),
-            sb_request('GET', '/rest/v1/nail_addons', params={'active':'eq.true','select':'id,minutes'}),
-            sb_request('GET', '/rest/v1/nail_settings', params={'id':'eq.1','select':'booking_enabled'}),
-        )
-        services = service_response.json()
-        if not services:
-            raise HTTPException(400, 'Услуга недоступна.')
-        addons = addon_response.json()
-        selected = set(addon_ids)
-        if not selected.issubset({a['id'] for a in addons}):
-            raise HTTPException(400, 'Дополнение недоступно. Выбери услугу заново.')
-        minutes = services[0]['minutes'] + sum(a['minutes'] for a in addons if a['id'] in selected)
-        settings = settings_response.json()
-        enabled = bool(settings and settings[0]['booking_enabled'])
-        bookings = (await sb_request('GET', '/rest/v1/nail_bookings', params={'select':'starts_at,ends_at','status':'in.(awaiting_receipt,pending_review,payment_not_found,confirmed,cancel_requested,reschedule_requested)','starts_at':'lt.'+(day+timedelta(days=1,minutes=minutes)).isoformat(),'ends_at':'gt.'+day.isoformat()})).json()
-        intervals = [(datetime.fromisoformat(b['starts_at'].replace('Z','+00:00')),datetime.fromisoformat(b['ends_at'].replace('Z','+00:00'))) for b in bookings]
-        now = datetime.now(moscow)
-        slots = []
-        for time in allowed_times:
-            hour, minute = map(int,time.split(':'))
-            start = day.replace(hour=hour,minute=minute)
-            end = start+timedelta(minutes=minutes)
-            reason = 'Запись закрыта' if not enabled else 'Прошло' if start <= now else 'Занято' if any(start < b and end > a for a,b in intervals) else ''
-            slots.append({'time':time,'available':not reason,'reason':reason})
-        return {'slots':slots,'minutes':minutes}
-
-    @app.post('/api/booking-availability')
-    async def booking_availability(request: Request):
-        verify_init_data(request.headers.get('X-Telegram-Init-Data', ''))
-        body = await request.json()
-        try:
-            month = datetime.strptime(str(body.get('month', '')), '%Y-%m')
-        except ValueError:
-            raise HTTPException(400, 'Некорректный месяц.')
-        addon_ids = body.get('addon_ids', [])
-        if not isinstance(addon_ids, list) or len(addon_ids) > 20 or any(not isinstance(x, str) for x in addon_ids):
-            raise HTTPException(400, 'Некорректные дополнения.')
-        service_id = body.get('service_id')
-        if not isinstance(service_id, str):
-            raise HTTPException(400, 'Выбери услугу.')
-        service_response, addon_response, settings_response = await asyncio.gather(
-            sb_request('GET', '/rest/v1/nail_services', params={'id':'eq.'+service_id,'active':'eq.true','select':'id,minutes'}),
-            sb_request('GET', '/rest/v1/nail_addons', params={'active':'eq.true','select':'id,minutes'}),
-            sb_request('GET', '/rest/v1/nail_settings', params={'id':'eq.1','select':'booking_enabled'}),
-        )
-        services = service_response.json()
-        if not services:
-            raise HTTPException(400, 'Услуга недоступна.')
-        addons = addon_response.json()
-        selected = set(addon_ids)
-        if not selected.issubset({a['id'] for a in addons}):
-            raise HTTPException(400, 'Дополнение недоступно. Выбери услугу заново.')
-        minutes = services[0]['minutes'] + sum(a['minutes'] for a in addons if a['id'] in selected)
-        settings = settings_response.json()
-        enabled = bool(settings and settings[0]['booking_enabled'])
-        month_start = month.replace(tzinfo=moscow)
-        month_end = (month_start + timedelta(days=32)).replace(day=1)
-        bookings = (await sb_request('GET', '/rest/v1/nail_bookings', params={'select':'starts_at,ends_at','status':'in.(awaiting_receipt,pending_review,payment_not_found,confirmed,cancel_requested,reschedule_requested)','starts_at':'lt.'+(month_end+timedelta(minutes=minutes)).isoformat(),'ends_at':'gt.'+month_start.isoformat()})).json()
-        intervals = [(datetime.fromisoformat(b['starts_at'].replace('Z','+00:00')),datetime.fromisoformat(b['ends_at'].replace('Z','+00:00'))) for b in bookings]
-        now = datetime.now(moscow)
-        days = {}
-        day = month_start
-        while day < month_end:
-            has_free_slot = False
-            for time in allowed_times:
-                hour, minute = map(int,time.split(':'))
-                start = day.replace(hour=hour,minute=minute)
-                end = start+timedelta(minutes=minutes)
-                if enabled and start > now and not any(start < b_end and end > b_start for b_start,b_end in intervals):
-                    has_free_slot = True
-                    break
-            days[day.strftime('%Y-%m-%d')] = {'available':has_free_slot}
-            day += timedelta(days=1)
-        return {'days':days,'minutes':minutes}
