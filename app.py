@@ -28,7 +28,7 @@ ALLOWED_TIMES = ('11:00', '13:30', '16:00', '18:30', '20:30')
 RECEIPT_TYPES = {'image/jpeg':'jpg','image/png':'png','image/webp':'webp','application/pdf':'pdf'}
 MAX_RECEIPT_SIZE = 10 * 1024 * 1024
 RECEIPT_BUCKET = 'nail-private-receipts'
-BUILD = 'receipt-flow-v3-single-admin'
+BUILD = 'receipt-flow-v4-multi-admin'
 app = FastAPI()
 HTTP_CLIENT = None
 TELEGRAM_SETUP_TASK = None
@@ -104,11 +104,11 @@ def verify_init_data(raw_init_data):
         raise HTTPException(401, 'Не удалось определить личный Telegram-аккаунт.')
     return user
 
-class SingleAdminRuntime(BookingRuntime):
+class MultiAdminRuntime(BookingRuntime):
     async def is_admin(self, telegram_id):
-        if not isinstance(telegram_id,int) or telegram_id != MASTER_ID:
+        if not isinstance(telegram_id,int):
             return False
-        rows = (await self.sb('GET','/rest/v1/nail_admins',params={'telegram_id':'eq.'+str(MASTER_ID),'is_active':'eq.true','select':'telegram_id'})).json()
+        rows = (await self.sb('GET','/rest/v1/nail_admins',params={'telegram_id':'eq.'+str(telegram_id),'is_active':'eq.true','select':'telegram_id'})).json()
         return bool(rows)
 
 async def require_admin(raw_init_data):
@@ -118,7 +118,7 @@ async def require_admin(raw_init_data):
     return user
 
 install(app, sb_request, verify_init_data, MOSCOW, ALLOWED_TIMES)
-BOT = SingleAdminRuntime(sb_request,get_http,TOKEN,MASTER_ID,URL,MOSCOW,RECEIPT_BUCKET)
+BOT = MultiAdminRuntime(sb_request,get_http,TOKEN,MASTER_ID,URL,MOSCOW,RECEIPT_BUCKET)
 
 @app.on_event('startup')
 async def enable_telegram_buttons():
