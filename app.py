@@ -8,27 +8,30 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Header
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Header, BackgroundTasks
 from fastapi.responses import HTMLResponse, Response
 import httpx
 from work_photos import replace_work_photos
 from booking_availability import install, CLIENT_SCRIPT
-from booking_messages import BookingMessages, ADMIN_CSS
+from booking_messages import ADMIN_CSS
+from booking_runtime import BookingRuntime
 
 TOKEN = os.environ.get('BOT_TOKEN', '')
 SECRET = os.environ.get('WEBHOOK_SECRET', '')
 URL = os.environ.get('APP_URL', '').rstrip('/')
 SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
 SUPABASE_KEY = os.environ.get('SUPABASE_SECRET_KEY', '')
-MASTER_ID = 8950443320
+MASTER_ID = int(os.environ.get('MASTER_TELEGRAM_ID') or '8950443320')
 DIAGNOSTIC_IDS = {MASTER_ID, 7689570674}
 MOSCOW = timezone(timedelta(hours=3))
 ALLOWED_TIMES = ('11:00', '13:30', '16:00', '18:30', '20:30')
 RECEIPT_TYPES = {'image/jpeg':'jpg','image/png':'png','image/webp':'webp','application/pdf':'pdf'}
 MAX_RECEIPT_SIZE = 10 * 1024 * 1024
 RECEIPT_BUCKET = 'nail-private-receipts'
+BUILD = 'receipt-flow-v2'
 app = FastAPI()
 HTTP_CLIENT = None
+TELEGRAM_SETUP_TASK = None
 
 def get_http():
     global HTTP_CLIENT
@@ -86,8 +89,8 @@ def verify_init_data(raw_init_data):
         user = json.loads(pairs.get('user','{}'))
     except ValueError:
         raise HTTPException(401, 'Некорректные данные Telegram.')
-    if not user.get('id'):
-        raise HTTPException(401, 'Не удалось определить Telegram ID.')
+    if not user.get('id') or user.get('is_bot'):
+        raise HTTPException(401, 'Не удалось определить личный Telegram-аккаунт.')
     return user
 
 async def require_admin(raw_init_data):
@@ -98,15 +101,12 @@ async def require_admin(raw_init_data):
     return user
 
 install(app, sb_request, verify_init_data, MOSCOW, ALLOWED_TIMES)
-BOT = BookingMessages(sb_request,get_http,TOKEN,MASTER_ID,URL,MOSCOW,RECEIPT_BUCKET)
+BOT = BookingRuntime(sb_request,get_http,TOKEN,MASTER_ID,URL,MOSCOW,RECEIPT_BUCKET)
 
 @app.on_event('startup')
 async def enable_telegram_buttons():
-    if TOKEN and SECRET and URL:
-        try:
-            await BOT.telegram('setWebhook',{'url':URL+'/telegram/webhook','secret_token':SECRET,'allowed_updates':['message','callback_query']})
-        except Exception:
-            logging.getLogger(__name__).error('Unable to enable Telegram callback updates')
+    global TELEGRAM_SETUP_TASK
+    TELEGRAM_SETUP_TASK = asyncio.create_task(BOT.configure(SECRET))
 
 async def send_telegram(chat_id, text):
     if not TOKEN or not chat_id:
@@ -115,9 +115,6 @@ async def send_telegram(chat_id, text):
         await BOT.telegram('sendMessage',{'chat_id':chat_id,'text':text})
     except Exception:
         logging.getLogger(__name__).error('Telegram message delivery failed')
-
-async def notify_new_booking(booking):
-    await BOT.notify(booking)
 
 @app.get('/')
 def home():
@@ -132,8 +129,9 @@ def admin_page():
     return HTMLResponse(ADMIN_PAGE,headers={'Cache-Control':'no-store'})
 
 @app.get('/health')
+@app.head('/health')
 def health():
-    return {'ok':True}
+    return {'ok':True,'build':BUILD,'telegram':dict(BOT.runtime)}
 
 @app.get('/api/config')
 async def api_config():
@@ -170,9 +168,7 @@ async def create_booking(request: Request):
     if starts_at < datetime.now(MOSCOW):
         raise HTTPException(400,'Нельзя записаться на прошедшее время.')
     response = await sb_request('POST','/rest/v1/rpc/create_nail_booking',json_body={'p_telegram_id':user['id'],'p_service_id':service_id,'p_addon_ids':addon_ids,'p_starts_at':starts_at.isoformat(),'p_client_name':client_name,'p_telegram_username':telegram_username,'p_client_comment':client_comment},headers={'Prefer':'return=representation'})
-    booking = response.json()
-    asyncio.create_task(notify_new_booking(booking))
-    return booking
+    return response.json()
 
 @app.post('/api/bookings/{booking_id}/receipt')
 async def upload_receipt(booking_id: str, file: UploadFile = File(...), comment: str = Form(''), x_telegram_init_data: str = Header(default='')):
@@ -328,24 +324,32 @@ async def check_database():
     return '✅ Supabase подключён. Основные таблицы доступны, ID мастера найден.'
 
 @app.post('/telegram/webhook')
-async def webhook(request: Request):
+async def webhook(request: Request, background_tasks: BackgroundTasks):
     supplied = request.headers.get('X-Telegram-Bot-Api-Secret-Token','')
     if not SECRET or not secrets.compare_digest(supplied,SECRET):
+        logging.getLogger(__name__).warning('Telegram webhook rejected: secret mismatch')
         raise HTTPException(403)
     update = await request.json()
     if update.get('callback_query'):
-        await BOT.callback(update['callback_query'])
+        BOT.seen('last_callback_seen')
+        background_tasks.add_task(BOT.callback,update['callback_query'])
         return {'ok':True}
     message = update.get('message')
     if message and message.get('chat',{}).get('type') == 'private':
-        parts = message.get('text','').split(maxsplit=1)
+        sender = message.get('from',{})
+        if sender.get('is_bot'):
+            return {'ok':True}
+        parts = str(message.get('text') or '').split(maxsplit=1)
         command = parts[0].split('@',1)[0] if parts else ''
+        if command in ('/start','/id'):
+            BOT.seen('last_start_seen')
+            logging.getLogger(__name__).warning('Telegram command received: %s',command)
+            return BOT.webhook_reply(message['chat']['id'],sender,command)
         if command == '/dbcheck':
-            if message.get('from',{}).get('id') not in DIAGNOSTIC_IDS:
+            if sender.get('id') not in DIAGNOSTIC_IDS:
                 return {'ok':True}
             await send_telegram(message['chat']['id'],await check_database())
             return {'ok':True}
-        await BOT.telegram('sendMessage',{'chat_id':message['chat']['id'],'text':'Привет! Запишись на маникюр к Ярославе (Yasa cat) через удобное мини-приложение ниже 👇','reply_markup':{'inline_keyboard':[[{'text':'💅 Записаться на маникюр','web_app':{'url':URL or 'https://google.com'}}]]}})
     return {'ok':True}
 
 @app.post('/admin/setup')
@@ -353,6 +357,8 @@ async def setup(request: Request):
     supplied = request.headers.get('X-Admin-Secret','')
     if not SECRET or not secrets.compare_digest(supplied,SECRET):
         raise HTTPException(403)
-    await BOT.telegram('setWebhook',{'url':URL+'/telegram/webhook','secret_token':SECRET,'allowed_updates':['message','callback_query']})
+    await BOT.configure(SECRET)
+    if BOT.runtime['webhook_state'] != 'configured':
+        raise HTTPException(502,'Регистрация вебхука не подтверждена. Проверь настройки сервера.')
     await BOT.telegram('setChatMenuButton',{'menu_button':{'type':'web_app','text':'Записаться','web_app':{'url':URL}}})
-    return {'ok':True}
+    return {'ok':True,'telegram':dict(BOT.runtime)}
