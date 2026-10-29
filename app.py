@@ -21,17 +21,28 @@ SECRET = os.environ.get('WEBHOOK_SECRET', '')
 URL = os.environ.get('APP_URL', '').rstrip('/')
 SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
 SUPABASE_KEY = os.environ.get('SUPABASE_SECRET_KEY', '')
-MASTER_ID = int(os.environ.get('MASTER_TELEGRAM_ID') or '8950443320')
-DIAGNOSTIC_IDS = {MASTER_ID, 7689570674}
+MASTER_ID = 7689570674
+DIAGNOSTIC_IDS = {MASTER_ID}
 MOSCOW = timezone(timedelta(hours=3))
 ALLOWED_TIMES = ('11:00', '13:30', '16:00', '18:30', '20:30')
 RECEIPT_TYPES = {'image/jpeg':'jpg','image/png':'png','image/webp':'webp','application/pdf':'pdf'}
 MAX_RECEIPT_SIZE = 10 * 1024 * 1024
 RECEIPT_BUCKET = 'nail-private-receipts'
-BUILD = 'receipt-flow-v2'
+BUILD = 'receipt-flow-v3-single-admin'
 app = FastAPI()
 HTTP_CLIENT = None
 TELEGRAM_SETUP_TASK = None
+
+ADMIN_ACCESS_JS = r'''
+(function(){
+ const style=document.createElement('style');
+ style.textContent='#admin-open{display:none!important}html.sole-admin-access #admin-open{display:block!important}';
+ document.head.appendChild(style);
+ fetch('/api/me',{headers:{'X-Telegram-Init-Data':window.Telegram?.WebApp?.initData||''}})
+ .then(async response=>{if(!response.ok)return;const me=await response.json();document.documentElement.classList.toggle('sole-admin-access',me.is_admin===true);})
+ .catch(()=>document.documentElement.classList.remove('sole-admin-access'));
+})();
+'''
 
 def get_http():
     global HTTP_CLIENT
@@ -42,7 +53,7 @@ def get_http():
 with open('index.html', encoding='utf-8') as f:
     HTML_PAGE = replace_work_photos(f.read())
 with open('static/client-enhance.js', encoding='utf-8') as f:
-    CLIENT_JS = f.read() + '\n' + CLIENT_SCRIPT
+    CLIENT_JS = ADMIN_ACCESS_JS + '\n' + f.read() + '\n' + CLIENT_SCRIPT
 with open('admin.html', encoding='utf-8') as f:
     ADMIN_PAGE = f.read().replace('<main>', '<main><a href="/" style="display:inline-block;margin-bottom:16px;color:#77554e;font-size:16px;text-decoration:none;padding:10px 0">← Выйти из кабинета</a>', 1).replace('</head>',ADMIN_CSS+'</head>',1)
 
@@ -93,15 +104,21 @@ def verify_init_data(raw_init_data):
         raise HTTPException(401, 'Не удалось определить личный Telegram-аккаунт.')
     return user
 
+class SingleAdminRuntime(BookingRuntime):
+    async def is_admin(self, telegram_id):
+        if not isinstance(telegram_id,int) or telegram_id != MASTER_ID:
+            return False
+        rows = (await self.sb('GET','/rest/v1/nail_admins',params={'telegram_id':'eq.'+str(MASTER_ID),'is_active':'eq.true','select':'telegram_id'})).json()
+        return bool(rows)
+
 async def require_admin(raw_init_data):
     user = verify_init_data(raw_init_data)
-    response = await sb_request('GET', f"/rest/v1/nail_admins?telegram_id=eq.{user['id']}&select=telegram_id")
-    if not response.json():
+    if not await BOT.is_admin(user['id']):
         raise HTTPException(403, 'Нет доступа к кабинету.')
     return user
 
 install(app, sb_request, verify_init_data, MOSCOW, ALLOWED_TIMES)
-BOT = BookingRuntime(sb_request,get_http,TOKEN,MASTER_ID,URL,MOSCOW,RECEIPT_BUCKET)
+BOT = SingleAdminRuntime(sb_request,get_http,TOKEN,MASTER_ID,URL,MOSCOW,RECEIPT_BUCKET)
 
 @app.on_event('startup')
 async def enable_telegram_buttons():
@@ -143,8 +160,7 @@ async def api_config():
 @app.get('/api/me')
 async def api_me(request: Request):
     user = verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
-    response = await sb_request('GET',f"/rest/v1/nail_admins?telegram_id=eq.{user['id']}&select=telegram_id")
-    return {'telegram_id':user['id'],'is_admin':bool(response.json())}
+    return {'telegram_id':user['id'],'is_admin':await BOT.is_admin(user['id'])}
 
 @app.post('/api/bookings')
 async def create_booking(request: Request):
@@ -311,6 +327,7 @@ async def check_database():
             params = {'select':column,'limit':'1'}
             if table == 'nail_admins':
                 params['telegram_id'] = f'eq.{MASTER_ID}'
+                params['is_active'] = 'eq.true'
             response = await get_http().get(SUPABASE_URL+'/rest/v1/'+table,headers={'apikey':SUPABASE_KEY,'Cache-Control':'no-store'},params=params)
             if response.status_code != 200:
                 return f'Нет доступа к {table}: HTTP {response.status_code}. Проверьте серверный секретный ключ и права таблиц.'
@@ -318,10 +335,10 @@ async def check_database():
             if not isinstance(data,list):
                 return 'База вернула неожиданный формат ответа.'
             if table == 'nail_admins' and not any(row.get('telegram_id') == MASTER_ID for row in data):
-                return 'Соединение есть, но ID мастера не найден в nail_admins.'
+                return 'Соединение есть, но активный ID администратора не найден в nail_admins.'
     except (httpx.HTTPError,ValueError):
         return 'Не удалось связаться с Supabase. Попробуйте позже; секретные значения не выводятся.'
-    return '✅ Supabase подключён. Основные таблицы доступны, ID мастера найден.'
+    return '✅ Supabase подключён. Основные таблицы доступны, активный ID администратора найден.'
 
 @app.post('/telegram/webhook')
 async def webhook(request: Request, background_tasks: BackgroundTasks):
