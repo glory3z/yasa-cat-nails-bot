@@ -70,7 +70,6 @@ class BookingMessages:
                     rows.append([button])
         if payment:
             rows.append(payment)
-        rows.append([{'text':'💬 Связаться с клиентом','url':f"tg://user?id={int(b['telegram_id'])}"}])
         rows.append([{'text':'← Кратко' if details else 'ℹ️ Подробнее','callback_data':f"bk:{'refresh' if details else 'details'}:{b['id']}"},{'text':'Обновить','callback_data':f"bk:refresh:{b['id']}"}])
         if self.url:
             rows.append([{'text':'Кабинет мастера','web_app':{'url':self.url+'/admin'}}])
@@ -164,10 +163,7 @@ class BookingMessages:
                 detailed=code=='cdetails'
                 text=self.card(b,'Твоя запись',client=True,details=detailed)
                 markup=self.client_keyboard(b,detailed)
-                if detailed:
-                    await self.telegram('sendMessage',{'chat_id':actor,'text':text,'reply_markup':markup})
-                else:
-                    await self.edit_card(actor,message['message_id'],text,markup)
+                await self.edit_card(actor,message['message_id'],text,markup)
                 return
             if not await self.is_admin(actor):
                 raise HTTPException(403,'Доступно только мастеру.')
@@ -176,7 +172,7 @@ class BookingMessages:
             b=await self.booking(booking_id)
             if code=='details':
                 markup={'inline_keyboard':[[{'text':'← Кратко','callback_data':f"bk:refresh:{b['id']}"}],[{'text':'💬 Связаться с клиентом','url':f"tg://user?id={int(b['telegram_id'])}"}]]}
-                await self.telegram('sendMessage',{'chat_id':actor,'text':self.card(b,details=True),'reply_markup':markup})
+                await self.edit_card(actor,message['message_id'],self.card(b,details=True),markup)
                 return
             if code in {'cancel','decline'}:
                 rule=ACTIONS[code]
@@ -192,7 +188,7 @@ class BookingMessages:
                 r=rows[0]
                 response=await self.sb('GET',f"/storage/v1/object/authenticated/{self.bucket}/{r['object_path']}")
                 await self.telegram('sendDocument',data={'chat_id':str(actor),'caption':'🧾 Чек для проверки'},files={'document':(r['original_filename'],response.content,r['mime_type'])})
-                await self.telegram('sendMessage',{'chat_id':actor,'text':self.card(b,'Проверка оплаты'),'reply_markup':self.keyboard(b,True)})
+                await self.edit_card(actor,message['message_id'],self.card(b,'Проверка оплаты'),self.keyboard(b,True))
                 return
             if code!='refresh':
                 code=code.removesuffix('_yes')
