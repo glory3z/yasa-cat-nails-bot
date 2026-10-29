@@ -5,6 +5,7 @@ import uuid
 import hmac
 import hashlib
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Header
@@ -12,6 +13,7 @@ from fastapi.responses import HTMLResponse, Response
 import httpx
 from work_photos import replace_work_photos
 from booking_availability import install, CLIENT_SCRIPT
+from booking_messages import BookingMessages, ADMIN_CSS
 
 TOKEN = os.environ.get('BOT_TOKEN', '')
 SECRET = os.environ.get('WEBHOOK_SECRET', '')
@@ -39,7 +41,7 @@ with open('index.html', encoding='utf-8') as f:
 with open('static/client-enhance.js', encoding='utf-8') as f:
     CLIENT_JS = f.read() + '\n' + CLIENT_SCRIPT
 with open('admin.html', encoding='utf-8') as f:
-    ADMIN_PAGE = f.read().replace('<main>', '<main><a href="/" style="display:inline-block;margin-bottom:16px;color:#77554e;font-size:16px;text-decoration:none;padding:10px 0">← Выйти из кабинета</a>', 1)
+    ADMIN_PAGE = f.read().replace('<main>', '<main><a href="/" style="display:inline-block;margin-bottom:16px;color:#77554e;font-size:16px;text-decoration:none;padding:10px 0">← Выйти из кабинета</a>', 1).replace('</head>',ADMIN_CSS+'</head>',1)
 
 def sb_headers(content_type=None):
     headers = {'apikey':SUPABASE_KEY,'Authorization':f'Bearer {SUPABASE_KEY}'}
@@ -96,19 +98,26 @@ async def require_admin(raw_init_data):
     return user
 
 install(app, sb_request, verify_init_data, MOSCOW, ALLOWED_TIMES)
+BOT = BookingMessages(sb_request,get_http,TOKEN,MASTER_ID,URL,MOSCOW,RECEIPT_BUCKET)
+
+@app.on_event('startup')
+async def enable_telegram_buttons():
+    if TOKEN and SECRET and URL:
+        try:
+            await BOT.telegram('setWebhook',{'url':URL+'/telegram/webhook','secret_token':SECRET,'allowed_updates':['message','callback_query']})
+        except Exception:
+            logging.getLogger(__name__).error('Unable to enable Telegram callback updates')
 
 async def send_telegram(chat_id, text):
     if not TOKEN or not chat_id:
         return
     try:
-        await get_http().post(f'https://api.telegram.org/bot{TOKEN}/sendMessage',json={'chat_id':chat_id,'text':text})
-    except httpx.HTTPError:
-        pass
+        await BOT.telegram('sendMessage',{'chat_id':chat_id,'text':text})
+    except Exception:
+        logging.getLogger(__name__).error('Telegram message delivery failed')
 
 async def notify_new_booking(booking):
-    text = ('Новая заявка\n\n'+f"Имя: {booking.get('client_name')}\nУслуга: {booking.get('service_name')}\nВремя: {booking.get('starts_at')}\nСумма: {booking.get('total_rub')} ₽\nПредоплата: {booking.get('deposit_rub')} ₽\nTelegram: @{booking.get('telegram_username') or '—'}\nКомментарий: {booking.get('client_comment') or '—'}")
-    await send_telegram(MASTER_ID,text)
-    await send_telegram(booking.get('telegram_id'),f"Запись создана. Пришли чек на предоплату {booking.get('deposit_rub')} ₽.")
+    await BOT.notify(booking)
 
 @app.get('/')
 def home():
@@ -168,10 +177,7 @@ async def create_booking(request: Request):
 @app.post('/api/bookings/{booking_id}/receipt')
 async def upload_receipt(booking_id: str, file: UploadFile = File(...), comment: str = Form(''), x_telegram_init_data: str = Header(default='')):
     user = verify_init_data(x_telegram_init_data)
-    rows = (await sb_request('GET',f'/rest/v1/nail_bookings?id=eq.{booking_id}&select=*')).json()
-    if not rows:
-        raise HTTPException(404,'Запись не найдена.')
-    booking = rows[0]
+    booking = await BOT.booking(booking_id)
     if booking['telegram_id'] != user['id']:
         raise HTTPException(403,'Это не твоя запись.')
     if booking['status'] != 'awaiting_receipt':
@@ -187,9 +193,13 @@ async def upload_receipt(booking_id: str, file: UploadFile = File(...), comment:
     object_path = f'{booking_id}/{uuid.uuid4().hex}.{extension}'
     await sb_request('POST',f'/storage/v1/object/{RECEIPT_BUCKET}/{object_path}',content=content,headers={'Content-Type':file.content_type})
     await sb_request('POST','/rest/v1/nail_uploaded_receipts',json_body={'booking_id':booking_id,'uploader_telegram_id':user['id'],'object_path':object_path,'original_filename':file.filename or 'receipt','mime_type':file.content_type,'size_bytes':len(content)})
-    await sb_request('PATCH',f'/rest/v1/nail_bookings?id=eq.{booking_id}',json_body={'status':'pending_review','client_comment':comment.strip()[:2000],'updated_at':datetime.now(MOSCOW).isoformat()})
-    text = f"Новый чек на проверку\n\nКлиент: {booking.get('client_name')}\nУслуга: {booking.get('service_name')}\nВремя: {booking.get('starts_at')}\nПредоплата: {booking.get('deposit_rub')} ₽"
-    asyncio.create_task(send_telegram(MASTER_ID,text))
+    client_comment = booking.get('client_comment') or ''
+    if comment.strip():
+        client_comment = (client_comment+'\nКомментарий к чеку: '+comment.strip()).strip()[:2000]
+    rows=(await sb_request('PATCH',f'/rest/v1/nail_bookings?id=eq.{booking_id}&status=eq.awaiting_receipt&select=*',json_body={'status':'pending_review','client_comment':client_comment,'updated_at':datetime.now(MOSCOW).isoformat()},headers={'Prefer':'return=representation'})).json()
+    if not rows:
+        raise HTTPException(409,'Статус записи изменился. Проверь «Мои записи».')
+    asyncio.create_task(BOT.notify(rows[0],'Чек получен — нужна проверка'))
     return {'ok':True}
 
 @app.get('/api/bookings/mine')
@@ -200,12 +210,15 @@ async def my_bookings(x_telegram_init_data: str = Header(default='')):
 @app.post('/api/bookings/{booking_id}/cancel')
 async def cancel_booking(booking_id: str,x_telegram_init_data: str = Header(default='')):
     user = verify_init_data(x_telegram_init_data)
-    rows = (await sb_request('GET',f'/rest/v1/nail_bookings?id=eq.{booking_id}&select=*')).json()
-    if not rows or rows[0]['telegram_id'] != user['id']:
+    b = await BOT.booking(booking_id)
+    if b['telegram_id'] != user['id']:
         raise HTTPException(404,'Запись не найдена.')
-    if rows[0]['status'] not in ('awaiting_receipt','pending_review'):
+    if b['status'] not in ('awaiting_receipt','pending_review'):
         raise HTTPException(409,'Эту запись уже нельзя отменить.')
-    await sb_request('PATCH',f'/rest/v1/nail_bookings?id=eq.{booking_id}',json_body={'status':'cancelled','updated_at':datetime.now(MOSCOW).isoformat()})
+    rows=(await sb_request('PATCH',f'/rest/v1/nail_bookings?id=eq.{booking_id}&status=eq.{b["status"]}&select=*',json_body={'status':'cancelled','updated_at':datetime.now(MOSCOW).isoformat()},headers={'Prefer':'return=representation'})).json()
+    if not rows:
+        raise HTTPException(409,'Статус записи уже изменился.')
+    asyncio.create_task(BOT.notify(rows[0],'Запись отменена клиентом'))
     return {'ok':True}
 
 @app.get('/api/admin/bookings')
@@ -232,19 +245,12 @@ async def admin_receipt(receipt_id: str,request: Request):
     response = await sb_request('POST',f"/storage/v1/object/sign/{RECEIPT_BUCKET}/{rows[0]['object_path']}",json_body={'expiresIn':600})
     return {'url':SUPABASE_URL+'/storage/v1'+response.json().get('signedURL','')}
 
-ACTION_UPDATES = {'confirm_payment':{'payment_status':'received','status':'confirmed'},'payment_not_found':{'status':'payment_not_found'},'decline':{'status':'declined'},'cancel':{'status':'cancelled'},'request_reschedule':{'status':'reschedule_requested'},'confirm_reschedule':{'status':'confirmed'}}
-
 @app.post('/api/admin/bookings/{booking_id}/action')
 async def admin_booking_action(booking_id: str,request: Request):
     user = await require_admin(request.headers.get('X-Telegram-Init-Data',''))
     body = await request.json()
-    action = body.get('action')
-    if action not in ACTION_UPDATES:
-        raise HTTPException(400,'Неизвестное действие.')
-    updates = dict(ACTION_UPDATES[action])
-    updates['updated_at'] = datetime.now(MOSCOW).isoformat()
-    await sb_request('PATCH',f'/rest/v1/nail_bookings?id=eq.{booking_id}',json_body=updates)
-    await sb_request('POST','/rest/v1/nail_admin_audit',json_body={'actor_telegram_id':user['id'],'action':action,'entity_id':booking_id,'details':body})
+    b = await BOT.perform(user['id'],booking_id,body.get('action'))
+    asyncio.create_task(BOT.notify(b,'Статус записи обновлён'))
     return {'ok':True}
 
 @app.get('/api/admin/config')
@@ -327,6 +333,9 @@ async def webhook(request: Request):
     if not SECRET or not secrets.compare_digest(supplied,SECRET):
         raise HTTPException(403)
     update = await request.json()
+    if update.get('callback_query'):
+        await BOT.callback(update['callback_query'])
+        return {'ok':True}
     message = update.get('message')
     if message and message.get('chat',{}).get('type') == 'private':
         parts = message.get('text','').split(maxsplit=1)
@@ -336,7 +345,7 @@ async def webhook(request: Request):
                 return {'ok':True}
             await send_telegram(message['chat']['id'],await check_database())
             return {'ok':True}
-        await get_http().post(f'https://api.telegram.org/bot{TOKEN}/sendMessage',json={'chat_id':message['chat']['id'],'text':'Привет! Запишись на маникюр к Ярославе (Yasa cat) через удобное мини-приложение ниже 👇','reply_markup':{'inline_keyboard':[[{'text':'💅 Записаться на маникюр','web_app':{'url':URL or 'https://google.com'}}]]}})
+        await BOT.telegram('sendMessage',{'chat_id':message['chat']['id'],'text':'Привет! Запишись на маникюр к Ярославе (Yasa cat) через удобное мини-приложение ниже 👇','reply_markup':{'inline_keyboard':[[{'text':'💅 Записаться на маникюр','web_app':{'url':URL or 'https://google.com'}}]]}})
     return {'ok':True}
 
 @app.post('/admin/setup')
@@ -344,6 +353,6 @@ async def setup(request: Request):
     supplied = request.headers.get('X-Admin-Secret','')
     if not SECRET or not secrets.compare_digest(supplied,SECRET):
         raise HTTPException(403)
-    await get_http().post(f'https://api.telegram.org/bot{TOKEN}/setWebhook',json={'url':URL+'/telegram/webhook','secret_token':SECRET,'allowed_updates':['message']})
-    await get_http().post(f'https://api.telegram.org/bot{TOKEN}/setChatMenuButton',json={'menu_button':{'type':'web_app','text':'Записаться','web_app':{'url':URL}}})
+    await BOT.telegram('setWebhook',{'url':URL+'/telegram/webhook','secret_token':SECRET,'allowed_updates':['message','callback_query']})
+    await BOT.telegram('setChatMenuButton',{'menu_button':{'type':'web_app','text':'Записаться','web_app':{'url':URL}}})
     return {'ok':True}
