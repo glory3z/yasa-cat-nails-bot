@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from booking_messages import BookingMessages
 
 log = logging.getLogger(__name__)
+MASTER_NOTIFICATION_RECIPIENT_IDS = (7689570674, 5206277381)
 
 class BookingRuntime(BookingMessages):
     def __init__(self, *args, **kwargs):
@@ -72,14 +73,22 @@ class BookingRuntime(BookingMessages):
         if self.bot_id is None:
             self.bot_id = (await self.telegram('getMe', {}))['id']
         self.runtime['master_is_bot'] = self.master == self.bot_id
-        if self.runtime['master_is_bot']:
-            log.error('Master notification not sent: configured recipient is this bot; client is not a fallback recipient')
-            return
-        if not await self.is_admin(self.master):
-            log.error('Master notification not sent: recipient is not in nail_admins')
-            return
         receipts = await self.receipts(b['id'])
-        await self.telegram('sendMessage',{'chat_id':self.master,'text':self.card(b,title),'reply_markup':self.keyboard(b,bool(receipts))})
+        text = self.card(b,title)
+        markup = self.keyboard(b,bool(receipts))
+        recipients = tuple(dict.fromkeys(MASTER_NOTIFICATION_RECIPIENT_IDS))
+
+        async def send_to(recipient):
+            if recipient == self.bot_id:
+                raise RuntimeError('Notification recipient is this bot')
+            if not await self.is_admin(recipient):
+                raise PermissionError('Notification recipient is not an active administrator')
+            return await self.telegram('sendMessage',{'chat_id':recipient,'text':text,'reply_markup':markup})
+
+        results = await asyncio.gather(*(send_to(recipient) for recipient in recipients),return_exceptions=True)
+        for recipient,result in zip(recipients,results):
+            if isinstance(result,Exception):
+                log.error('Master notification failed: recipient_id=%s type=%s',recipient,type(result).__name__)
 
     async def notify(self, b, title='Новая заявка'):
         if b['status'] == 'awaiting_receipt':
