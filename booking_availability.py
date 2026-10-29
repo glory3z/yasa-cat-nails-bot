@@ -128,3 +128,52 @@ def install(app, sb_request, verify_init_data, moscow, allowed_times):
             reason = 'Запись закрыта' if not enabled else 'Прошло' if start <= now else 'Занято' if any(start < b and end > a for a,b in intervals) else ''
             slots.append({'time':time,'available':not reason,'reason':reason})
         return {'slots':slots,'minutes':minutes}
+
+    @app.post('/api/booking-availability')
+    async def booking_availability(request: Request):
+        verify_init_data(request.headers.get('X-Telegram-Init-Data', ''))
+        body = await request.json()
+        try:
+            month = datetime.strptime(str(body.get('month', '')), '%Y-%m')
+        except ValueError:
+            raise HTTPException(400, 'Некорректный месяц.')
+        addon_ids = body.get('addon_ids', [])
+        if not isinstance(addon_ids, list) or len(addon_ids) > 20 or any(not isinstance(x, str) for x in addon_ids):
+            raise HTTPException(400, 'Некорректные дополнения.')
+        service_id = body.get('service_id')
+        if not isinstance(service_id, str):
+            raise HTTPException(400, 'Выбери услугу.')
+        service_response, addon_response, settings_response = await asyncio.gather(
+            sb_request('GET', '/rest/v1/nail_services', params={'id':'eq.'+service_id,'active':'eq.true','select':'id,minutes'}),
+            sb_request('GET', '/rest/v1/nail_addons', params={'active':'eq.true','select':'id,minutes'}),
+            sb_request('GET', '/rest/v1/nail_settings', params={'id':'eq.1','select':'booking_enabled'}),
+        )
+        services = service_response.json()
+        if not services:
+            raise HTTPException(400, 'Услуга недоступна.')
+        addons = addon_response.json()
+        selected = set(addon_ids)
+        if not selected.issubset({a['id'] for a in addons}):
+            raise HTTPException(400, 'Дополнение недоступно. Выбери услугу заново.')
+        minutes = services[0]['minutes'] + sum(a['minutes'] for a in addons if a['id'] in selected)
+        settings = settings_response.json()
+        enabled = bool(settings and settings[0]['booking_enabled'])
+        month_start = month.replace(tzinfo=moscow)
+        month_end = (month_start + timedelta(days=32)).replace(day=1)
+        bookings = (await sb_request('GET', '/rest/v1/nail_bookings', params={'select':'starts_at,ends_at','status':'in.(awaiting_receipt,pending_review,payment_not_found,confirmed,cancel_requested,reschedule_requested)','starts_at':'lt.'+(month_end+timedelta(minutes=minutes)).isoformat(),'ends_at':'gt.'+month_start.isoformat()})).json()
+        intervals = [(datetime.fromisoformat(b['starts_at'].replace('Z','+00:00')),datetime.fromisoformat(b['ends_at'].replace('Z','+00:00'))) for b in bookings]
+        now = datetime.now(moscow)
+        days = {}
+        day = month_start
+        while day < month_end:
+            has_free_slot = False
+            for time in allowed_times:
+                hour, minute = map(int,time.split(':'))
+                start = day.replace(hour=hour,minute=minute)
+                end = start+timedelta(minutes=minutes)
+                if enabled and start > now and not any(start < b_end and end > b_start for b_start,b_end in intervals):
+                    has_free_slot = True
+                    break
+            days[day.strftime('%Y-%m-%d')] = {'available':has_free_slot}
+            day += timedelta(days=1)
+        return {'days':days,'minutes':minutes}
