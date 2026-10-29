@@ -30,7 +30,7 @@
 
   function escapeText(value) {
     return String(value ?? '').replace(/[&<>"']/g, function (char) {
-      return {'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[char];
+      return {'&':'&','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char];
     });
   }
 
@@ -258,6 +258,42 @@
     };
     homeScreen.appendChild(button);
   }
+
+  const baseRenderCalendar = window.renderCalendar;
+  let availabilitySequence = 0;
+
+  window.renderCalendar = async function () {
+    const sequence = ++availabilitySequence;
+    if (typeof baseRenderCalendar === 'function') baseRenderCalendar();
+    if (!state?.service || !state?.month) return;
+
+    try {
+      const response = await fetch('/api/booking-availability', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Telegram-Init-Data': initData,
+        },
+        body: JSON.stringify({
+          month: `${state.month.getFullYear()}-${String(state.month.getMonth() + 1).padStart(2, '0')}`,
+          service_id: state.service.id,
+          addon_ids: state.addons.map(function (addon) { return addon.id; }),
+        }),
+      });
+      if (sequence !== availabilitySequence || !response.ok) return;
+
+      const data = await response.json();
+      document.querySelectorAll('[data-date]').forEach(function (button) {
+        const day = data.days?.[button.dataset.date];
+        if (day && !day.available) {
+          button.disabled = true;
+          button.title = 'Свободного времени нет';
+        }
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  };
 
   (async function init() {
     try {
