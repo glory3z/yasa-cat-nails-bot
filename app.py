@@ -15,6 +15,7 @@ from work_photos import replace_work_photos
 from booking_availability import install, CLIENT_SCRIPT
 from booking_messages import ADMIN_CSS
 from booking_runtime import BookingRuntime
+from booking_reminders import install as install_reminders
 
 TOKEN = os.environ.get('BOT_TOKEN', '')
 SECRET = os.environ.get('WEBHOOK_SECRET', '')
@@ -28,10 +29,11 @@ ALLOWED_TIMES = ('11:00', '13:30', '16:00', '18:30', '20:30')
 RECEIPT_TYPES = {'image/jpeg':'jpg','image/png':'png','image/webp':'webp','application/pdf':'pdf'}
 MAX_RECEIPT_SIZE = 10 * 1024 * 1024
 RECEIPT_BUCKET = 'nail-private-receipts'
-BUILD = 'receipt-flow-v4-multi-admin'
+BUILD = 'receipt-flow-v5-reminders'
 app = FastAPI()
 HTTP_CLIENT = None
 TELEGRAM_SETUP_TASK = None
+REMINDER_SETUP_TASK = None
 
 ADMIN_ACCESS_JS = r'''
 (function(){
@@ -119,10 +121,12 @@ async def require_admin(raw_init_data):
 
 install(app, sb_request, verify_init_data, MOSCOW, ALLOWED_TIMES)
 BOT = MultiAdminRuntime(sb_request,get_http,TOKEN,MASTER_ID,URL,MOSCOW,RECEIPT_BUCKET)
+REMINDERS = install_reminders(app,sb_request,get_http,TOKEN,URL,SECRET,MOSCOW,require_admin,master_name='Ярослава',address='Москва, м. Новогиреево')
 
 @app.on_event('startup')
 async def enable_telegram_buttons():
-    global TELEGRAM_SETUP_TASK
+    global TELEGRAM_SETUP_TASK, REMINDER_SETUP_TASK
+    REMINDER_SETUP_TASK = asyncio.create_task(REMINDERS.configure())
     TELEGRAM_SETUP_TASK = asyncio.create_task(BOT.configure(SECRET))
 
 async def send_telegram(chat_id, text):
@@ -148,7 +152,7 @@ def admin_page():
 @app.get('/health')
 @app.head('/health')
 def health():
-    return {'ok':True,'build':BUILD,'telegram':dict(BOT.runtime)}
+    return {'ok':True,'build':BUILD,'telegram':dict(BOT.runtime),'reminders':REMINDERS.state}
 
 @app.get('/api/config')
 async def api_config():
@@ -378,4 +382,14 @@ async def setup(request: Request):
     if BOT.runtime['webhook_state'] != 'configured':
         raise HTTPException(502,'Регистрация вебхука не подтверждена. Проверь настройки сервера.')
     await BOT.telegram('setChatMenuButton',{'menu_button':{'type':'web_app','text':'Записаться','web_app':{'url':URL}}})
-    return {'ok':True,'telegram':dict(BOT.runtime)}
+    return {'ok':True,'telegram':dict(BOT.runtime),'reminders':REMINDERS.state}
+
+
+@app.on_event('shutdown')
+async def close_reminder_setup():
+    if REMINDER_SETUP_TASK and not REMINDER_SETUP_TASK.done():
+        REMINDER_SETUP_TASK.cancel()
+        try:
+            await REMINDER_SETUP_TASK
+        except asyncio.CancelledError:
+            pass
