@@ -53,7 +53,7 @@ class BookingMessages:
                 created = datetime.fromisoformat(b['created_at'].replace('Z','+00:00')).astimezone(self.zone)
                 lines.append(f'Создана: {created:%d.%m.%Y %H:%M} МСК')
         if client and b['status']=='awaiting_receipt':
-            lines += ['','Реквизиты и условия оплаты — в мини-приложении. Прикрепи там чек; запись подтвердится после проверки мастером.']
+            lines += ['','Способ предоплаты уточни у мастера. После оплаты прикрепи чек в мини-приложении — запись подтвердится после проверки.']
         return '\n'.join(lines)
 
     def keyboard(self, b, has_receipt=False, details=False):
