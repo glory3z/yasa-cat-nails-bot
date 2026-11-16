@@ -63,10 +63,7 @@
       <h1>Предоплата</h1>
       <div id="payment-summary" class="summary"></div>
       <div class="info-banner">
-        <b>Реквизиты для перевода:</b><br>
-        <span id="payment-phone"></span><br>
-        <span id="payment-bank"></span><br>
-        Предоплата: <b id="payment-deposit"></b>
+        Способ предоплаты уточни у мастера. После оплаты прикрепи чек ниже.
       </div>
       <label class="label" for="receipt-file">Чек об оплате</label>
       <input id="receipt-file" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf">
@@ -89,9 +86,6 @@
       <div class="summary-row"><span>Итого</span><span>${money(booking.total_rub)}</span></div>
       <div class="summary-row total"><span>Предоплата</span><span>${money(booking.deposit_rub)}</span></div>
     `;
-    section.querySelector('#payment-phone').textContent = config?.settings?.payment_phone || '';
-    section.querySelector('#payment-bank').textContent = config?.settings?.payment_bank || '';
-    section.querySelector('#payment-deposit').textContent = money(booking.deposit_rub);
     section.querySelector('#receipt-file').value = '';
     section.querySelector('#receipt-comment').value = '';
     section.querySelector('#receipt-submit').disabled = true;
