@@ -159,7 +159,7 @@ async def api_config():
     services,addons,settings = await asyncio.gather(sb_request('GET','/rest/v1/nail_services?active=eq.true&order=sort_order.asc'),sb_request('GET','/rest/v1/nail_addons?active=eq.true&order=sort_order.asc'),sb_request('GET','/rest/v1/nail_settings?id=eq.1'))
     rows = settings.json()
     s = rows[0] if rows else {}
-    return {'services':services.json(),'addons':addons.json(),'settings':{'deposit_rub':s.get('deposit_rub',500),'payment_phone':s.get('payment_phone',''),'payment_bank':s.get('payment_bank',''),'cancellation_terms':s.get('cancellation_terms',''),'reschedule_terms':s.get('reschedule_terms',''),'booking_enabled':s.get('booking_enabled',False)}}
+    return {'services':services.json(),'addons':addons.json(),'settings':{'deposit_rub':s.get('deposit_rub',500),'cancellation_terms':s.get('cancellation_terms',''),'reschedule_terms':s.get('reschedule_terms',''),'booking_enabled':s.get('booking_enabled',False)}}
 
 @app.get('/api/me')
 async def api_me(request: Request):
@@ -274,13 +274,14 @@ async def admin_config(request: Request):
     await require_admin(request.headers.get('X-Telegram-Init-Data',''))
     services,addons,settings,availability = await asyncio.gather(sb_request('GET','/rest/v1/nail_services?order=sort_order.asc'),sb_request('GET','/rest/v1/nail_addons?order=sort_order.asc'),sb_request('GET','/rest/v1/nail_settings?id=eq.1'),sb_request('GET','/rest/v1/nail_availability?enabled=eq.true&order=starts_at.asc&limit=200'))
     rows = settings.json()
-    return {'services':services.json(),'addons':addons.json(),'settings':rows[0] if rows else {},'availability':availability.json()}
+    admin_settings = {k: v for k, v in (rows[0] if rows else {}).items() if k not in ('payment_phone', 'payment_bank')}
+    return {'services':services.json(),'addons':addons.json(),'settings':admin_settings,'availability':availability.json()}
 
 @app.put('/api/admin/settings')
 async def update_settings(request: Request):
     await require_admin(request.headers.get('X-Telegram-Init-Data',''))
     body = await request.json()
-    updates = {key:body[key] for key in ('deposit_rub','payment_phone','payment_bank','cancellation_terms','reschedule_terms','booking_enabled') if key in body}
+    updates = {key:body[key] for key in ('deposit_rub','cancellation_terms','reschedule_terms','booking_enabled') if key in body}
     updates['updated_at'] = datetime.now(MOSCOW).isoformat()
     await sb_request('PATCH','/rest/v1/nail_settings?id=eq.1',json_body=updates)
     return {'ok':True}
